@@ -8,8 +8,10 @@ subscribe to live progress without racing the worker thread.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -25,6 +27,21 @@ from phishtrace.api.runs import TERMINAL_STATUSES, RunError
 from phishtrace.core.timeline import TimelineMerger
 from phishtrace.models import iso
 from phishtrace.normalizer import normalize_indicator, refang
+from phishtrace.reports import (
+    MEDIA_TYPES,
+    SUPPORTED_FORMATS,
+    IntegrationError,
+    build_abuse_package,
+    build_misp_event,
+    build_report_data,
+    build_stix_bundle,
+    canonical_format,
+    push_misp,
+    push_stix_bundle,
+    render_json,
+    render_report,
+    report_filename,
+)
 from phishtrace.utils import to_jsonable
 
 router = APIRouter(prefix="/api", tags=["investigations"])
@@ -364,6 +381,155 @@ async def analyze_kit(
         await analyzer.close()
     payload = report.as_dict()
     return {"kit": payload, "persisted": bool(report.kit_id), "skipped": report.skipped}
+
+
+def _report_data(request: Request, investigation_id: str) -> dict:
+    config = request.app.state.config
+    return build_report_data(
+        request.app.state.repo,
+        investigation_id,
+        settings=config.reports,
+        default_region=config.default_region,
+    )
+
+
+@router.get("/investigations/{investigation_id}/reports")
+def report_formats(request: Request, investigation_id: str, user: dict = Depends(current_user)):
+    _owned_inv(request, investigation_id, user)
+    return {
+        "formats": [
+            {
+                "format": fmt,
+                "media_type": MEDIA_TYPES.get(fmt),
+                "url": f"/api/investigations/{investigation_id}/report?format={fmt}",
+            }
+            for fmt in SUPPORTED_FORMATS
+        ],
+        "abuse_url": f"/api/investigations/{investigation_id}/abuse?download=true",
+    }
+
+
+@router.get("/investigations/{investigation_id}/report")
+def download_report(
+    request: Request,
+    investigation_id: str,
+    user: dict = Depends(current_user),
+    format: str = Query(default="html", max_length=16),
+    inline: bool = Query(default=False),
+):
+    """Render one report format from durable records. No network access."""
+    _owned_inv(request, investigation_id, user)
+    try:
+        fmt = canonical_format(format)
+        data = _report_data(request, investigation_id)
+        content = render_report(data, fmt)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - HTTP boundary; details stay server-side
+        raise HTTPException(status_code=500, detail="report rendering failed") from exc
+    filename = report_filename(data, fmt)
+    disposition = "inline" if inline and fmt in {"html", "pdf", "txt", "md"} else "attachment"
+    headers = {
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if fmt == "html" and disposition == "inline":
+        headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        )
+    return Response(content=content, media_type=MEDIA_TYPES.get(fmt, "application/octet-stream"), headers=headers)
+
+
+@router.get("/investigations/{investigation_id}/abuse")
+def abuse_package(
+    request: Request,
+    investigation_id: str,
+    user: dict = Depends(current_user),
+    download: bool = Query(default=False),
+):
+    """Draft abuse notifications. Addresses come only from explicit config."""
+    _owned_inv(request, investigation_id, user)
+    config = request.app.state.config
+    try:
+        data = _report_data(request, investigation_id)
+        package = build_abuse_package(data, config.reports, json_attachment=render_json(data))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="abuse package generation failed") from exc
+    public = {key: value for key, value in package.items() if not key.startswith("_")}
+    if not download:
+        return public
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for filename, raw in package.get("_email_bytes", {}).items():
+            archive.writestr(filename, raw)
+        archive.writestr("abuse-manifest.json", json.dumps(public, indent=2, ensure_ascii=False))
+        archive.writestr("report.json", render_json(data))
+    filename = f"phishtrace-abuse-{investigation_id[:24]}.zip"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+class ExportPushRequest(BaseModel):
+    push: bool = False
+
+
+@router.post("/investigations/{investigation_id}/export/misp")
+async def export_misp(
+    request: Request,
+    investigation_id: str,
+    body: ExportPushRequest,
+    user: dict = Depends(current_user),
+):
+    _owned_inv(request, investigation_id, user)
+    data = _report_data(request, investigation_id)
+    event = build_misp_event(data)
+    if not body.push:
+        return {"pushed": False, "event": event, "note": "Draft only. Set push=true to send it to the configured MISP."}
+    if request.app.state.config.auth.enabled:
+        require_csrf(request)
+    settings = request.app.state.config.reports.misp
+    if not settings.get("enabled"):
+        raise HTTPException(status_code=409, detail="MISP push is disabled in reports.misp.enabled")
+    api_key = request.app.state.config.api_key(str(settings.get("key_env") or "MISP_API_KEY"))
+    try:
+        result = await push_misp(event, settings, api_key=api_key)
+    except IntegrationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"pushed": True, "event_uuid": event["Event"]["uuid"], "result": result}
+
+
+@router.post("/investigations/{investigation_id}/export/opencti")
+async def export_opencti(
+    request: Request,
+    investigation_id: str,
+    body: ExportPushRequest,
+    user: dict = Depends(current_user),
+):
+    _owned_inv(request, investigation_id, user)
+    data = _report_data(request, investigation_id)
+    bundle = build_stix_bundle(data)
+    if not body.push:
+        return {"pushed": False, "bundle": bundle, "note": "Draft only. Set push=true to send it to the configured OpenCTI."}
+    if request.app.state.config.auth.enabled:
+        require_csrf(request)
+    settings = request.app.state.config.reports.opencti
+    if not settings.get("enabled"):
+        raise HTTPException(status_code=409, detail="OpenCTI push is disabled in reports.opencti.enabled")
+    token = request.app.state.config.api_key(str(settings.get("token_env") or "OPENCTI_TOKEN"))
+    try:
+        result = await push_stix_bundle(bundle, settings, token=token)
+    except IntegrationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"pushed": True, "bundle_id": bundle["id"], "result": result}
 
 
 @router.get("/stats")

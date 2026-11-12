@@ -1,0 +1,130 @@
+# {{ data.company }} investigation report
+
+**Seed:** `{{ data.seed.normalized or data.seed.value }}`  
+**Seed type:** {{ data.seed.type or "unknown" }}  
+**Report:** `{{ data.report_id }}` · **TLP:** {{ data.tlp|upper }} · **Generated:** {{ data.generated_at }}  
+**Status:** {{ data.status }} · **Owner:** {{ data.owner }}  
+**Region lens:** {{ data.country.code or "not established" }} ({{ data.country.source }})
+
+## Executive summary
+
+{% if data.headline %}{{ data.headline }}{% endif %}
+
+{% if data.earliest_observed %}
+**Earliest observed:** {{ data.earliest_observed.occurred_at }} — {{ data.earliest_observed.label or data.earliest_observed.stage }} ({{ data.earliest_observed.stage }}, precision {{ data.earliest_observed.precision }}, sources {{ (data.earliest_observed.sources or [])|join(", ") or "unspecified" }}).
+
+This is the earliest dated observation in the covered sources, not a claim of the first moment the activity existed.
+{% else %}
+**Earliest observed:** no dated event was observed in the covered sources. This is not evidence that the activity did not occur.
+{% endif %}
+
+| Indicator count | Edges | Timeline events | Sightings | Providers ran | Captures |
+|---:|---:|---:|---:|---:|---:|
+| {{ data.counts.indicators or 0 }} | {{ data.counts.edges or 0 }} | {{ data.timeline.event_count or data.counts.events or 0 }} | {{ data.counts.sightings or 0 }} | {{ data.coverage.ran|length }} | {{ data.counts.evidence or 0 }} |
+
+**Coverage:** {{ data.coverage.ran|length }} ran · {{ data.coverage.skipped|length }} skipped · {{ data.coverage.failed|length }} failed. {{ data.coverage.note }}
+
+{% if data.coverage.skipped %}Skipped providers: {{ data.coverage.skipped|join(", ") }}.{% endif %}
+{% if data.coverage.failed %}Failed providers: {{ data.coverage.failed|join(", ") }}.{% endif %}
+{% if data.truncated %}**Budget truncated:** the graph is intentionally incomplete.{% endif %}
+
+## Earliest observed timeline
+
+{% if data.timeline.events %}
+| Occurred (UTC) | Stage | Observation | Detail | Sources | Precision |
+|---|---|---|---|---|---|
+{% for row in data.timeline.events %}| `{{ row.occurred_at }}` | {{ row.stage }} | {{ row.label }} | {{ row.detail or "" }}{% if row.indicator_value %} `{{ row.indicator_value }}`{% endif %} | {{ (row.sources or [])|join(", ") }} | {{ row.precision }} |
+{% endfor %}
+{% else %}
+No dated events were observed. The absence of a row means no covered source returned a usable date; it does not establish that the infrastructure is new.
+{% endif %}
+
+{% if data.timeline.gaps %}
+### Observed gaps of 90 days or more
+{% for gap in data.timeline.gaps %}- {{ gap.days }} days between {{ gap.from }} ({{ gap.from_stage }}) and {{ gap.to }} ({{ gap.to_stage }})
+{% endfor %}
+{% endif %}
+
+## Infrastructure and persona graph
+
+{% if data.top_edges %}
+| From | Relation | To | Provider | Strength | Confidence | Evidence |
+|---|---|---|---|---|---|---:|---|
+{% for edge in data.top_edges %}| `{{ edge.src_type }}` {{ edge.src_value }} | {{ edge.relation }} | `{{ edge.dst_type }}` {{ edge.dst_value }} | {{ edge.provider }} | {{ edge.selector_strength }} | {{ "%.2f"|format(edge.confidence or 0) }} | `{{ edge.evidence_id or "—" }}` |
+{% endfor %}
+{% else %}
+No graph edges were materialized. That means no covered provider returned an observation for this seed in this run; it does not mean the indicator is benign.
+{% endif %}
+
+### All materialized indicators
+
+| Type | Value | Depth | Path confidence | Context only | Tags |
+|---|---|---:|---:|---|---|
+{% for node in data.graph.nodes %}| {{ node.type }} | `{{ node.value }}` | {{ node.depth }} | {{ "%.2f"|format(node.path_confidence or 0) }} | {{ "yes" if node.context_only else "no" }} | {{ (node.tags or [])|join(", ") }} |
+{% endfor %}
+
+## Public sightings and persona roles
+
+{% if data.sightings %}
+{{ data.roles.note }} Only public posts are recorded; author attribution is a lead, not an identification.
+
+| Posted (UTC) | Platform | Author | Role | Excerpt |
+|---|---|---|---|---|
+{% for row in data.sightings %}| `{{ row.posted_at or "unknown" }}` | {{ row.platform }} | {{ row.author_handle or "unknown" }} | {{ row.role_label }} (`{{ row.role }}`) | {{ row.text_excerpt }} |
+{% endfor %}
+{% else %}
+No public sightings matched the covered selectors. This is a coverage outcome, not a finding that nobody discussed the campaign.
+{% endif %}
+
+## Provider coverage (mandatory)
+
+{{ data.coverage.note }}
+
+| Provider | Category | Status | Requests | Observations | Duration | Reason / error |
+|---|---|---|---|---:|---:|---:|---|
+{% for row in data.coverage.rows %}| {{ row.provider }} | {{ row.category }} | **{{ row.status }}** | {{ row.requests }} | {{ row.observations }} | {{ row.duration_ms }} ms | {{ row.reason or "—" }}{% if row.errors %} {{ row.errors|join("; ") }}{% endif %} |
+{% endfor %}
+{% if not data.coverage.rows %}
+**No provider coverage was recorded for this investigation.** No source was successfully consulted, so this report cannot support an absence-of-evidence conclusion.
+{% endif %}
+
+## Evidence captures
+
+{% if data.evidence %}
+The report lists capture metadata and digests. Raw response bodies remain in the local evidence store and are not embedded here.
+
+| Retrieved (UTC) | Provider | URL / request | SHA-256 | Size | Reference |
+|---|---|---|---|---|---|
+{% for row in data.evidence %}| `{{ row.retrieved_at }}` | {{ row.provider }} | `{{ row.url or row.request }}` | `{{ row.sha256 }}` | {{ row.size_bytes }} B | `{{ row.download_ref }}` |
+{% endfor %}
+{% else %}
+No raw captures were stored for this run.
+{% endif %}
+
+{% if data.kits %}
+## Kit analysis
+
+| URL | SHA-256 | Brand | Exfil email(s) | Telegram bot(s) | Credential artifacts | Notes |
+|---|---|---|---|---|---|---|
+{% for kit in data.kits %}| `{{ kit.url }}` | `{{ kit.kit_sha256 or "—" }}` | {{ kit.brand or "—" }} | {{ (kit.exfil_emails or [])|join(", ") or "—" }} | {{ (kit.telegram_bots or [])|join(", ") or "—" }} | {{ kit.credential_exposure_count or 0 }} | {{ kit.notes or "—" }} |
+{% endfor %}
+{% endif %}
+
+## Assessment limitations
+
+{% for item in data.limitations %}- {{ item }}
+{% endfor %}
+
+{% if data.warnings %}
+### Run warnings
+{% for warning in data.warnings[:40] %}- {{ warning }}
+{% endfor %}
+{% endif %}
+
+{% if data.stoplist_hits %}{{ data.stoplist_hits }} shared-infrastructure or stop-list hit(s) were kept context-only and expanded only under the configured rules.{% endif %}
+
+Report settings: company {{ data.company }} · TLP:{{ data.tlp|upper }} · region lens {{ data.country.code or "not established" }} ({{ data.country.source }}){% if data.cert_contact %} · configured CERT contact {{ data.cert_contact }}{% endif %}.
+
+---
+
+{{ data.company }} · PhishTrace {{ data.tool.version }} · generated {{ data.generated_at }} · all timestamps UTC unless stated · `{{ data.report_id }}`

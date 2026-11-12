@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ data.company }} report · {{ data.seed.normalized or data.seed.value }}</title>
+<style>
+:root { color-scheme: light; --ink:#17202a; --muted:#5b6b7b; --line:#d8e0e8; --brand:#0b5fff; --warn:#8a4b00; --bad:#a11616; --ok:#11663b; --bg:#f5f7fa; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; }
+.wrap { max-width:1100px; margin:0 auto; padding:28px 24px 60px; }
+header { background:#fff; border:1px solid var(--line); border-top:5px solid var(--brand); border-radius:10px; padding:22px 24px; margin-bottom:18px; }
+.brand { letter-spacing:.08em; text-transform:uppercase; font-size:12px; color:var(--brand); font-weight:700; }
+h1 { font-size:26px; line-height:1.25; margin:6px 0 4px; overflow-wrap:anywhere; }
+h2 { font-size:18px; margin:0 0 12px; }
+h3 { font-size:15px; margin:18px 0 8px; }
+p { margin:7px 0; }
+.muted { color:var(--muted); }
+.small { font-size:12px; }
+.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; overflow-wrap:anywhere; }
+.marking { display:inline-block; border:1px solid #111; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:700; letter-spacing:.06em; }
+.meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px 18px; margin-top:14px; }
+.meta div { border-left:3px solid var(--line); padding-left:9px; }
+.meta .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+.meta .v { font-weight:600; overflow-wrap:anywhere; }
+section { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px 22px; margin:14px 0; }
+.earliest { border:1px solid #b9d3ff; background:#f0f6ff; border-radius:8px; padding:12px 14px; margin:14px 0; }
+.earliest strong { color:var(--brand); }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin:12px 0; }
+.stat { border:1px solid var(--line); border-radius:8px; padding:10px 12px; background:#fbfcfe; }
+.stat .n { font-size:24px; font-weight:700; }
+.stat .l { color:var(--muted); font-size:11px; text-transform:uppercase; }
+table { width:100%; border-collapse:collapse; margin:9px 0 4px; }
+th, td { border-bottom:1px solid var(--line); text-align:left; vertical-align:top; padding:7px 8px; }
+th { background:#f7f9fc; font-size:11px; letter-spacing:.03em; text-transform:uppercase; color:var(--muted); }
+td { overflow-wrap:anywhere; }
+.status { font-weight:700; font-size:12px; }
+.status.ran { color:var(--ok); } .status.skipped { color:var(--warn); } .status.failed { color:var(--bad); }
+ul { margin:7px 0 0 18px; padding:0; } li { margin:4px 0; }
+.warn { border-left:4px solid var(--warn); background:#fff8e8; padding:9px 12px; margin:10px 0; }
+.limit { border-left:4px solid var(--bad); background:#fff2f2; padding:9px 12px; margin:10px 0; }
+footer { color:var(--muted); font-size:12px; text-align:center; margin-top:24px; }
+a { color:var(--brand); }
+@media print { body { background:#fff; } .wrap { max-width:none; padding:0; } section, header { break-inside:avoid; } a { color:inherit; text-decoration:none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="brand">{{ data.company }} · defensive threat intelligence</div>
+  <h1>{{ data.seed.normalized or data.seed.value or data.report_id }}</h1>
+  <div>
+    <span class="marking">TLP:{{ data.tlp|upper }}</span>
+    <span class="muted small"> · report {{ data.report_id }} · generated {{ data.generated_at }}</span>
+  </div>
+  <div class="meta">
+    <div><div class="k">Seed type</div><div class="v">{{ data.seed.type or "unknown" }}</div></div>
+    <div><div class="k">Investigation status</div><div class="v">{{ data.status }}</div></div>
+    <div><div class="k">Owner</div><div class="v">{{ data.owner }}</div></div>
+    <div><div class="k">Started (UTC)</div><div class="v">{{ data.started_at or "—" }}</div></div>
+    <div><div class="k">Finished (UTC)</div><div class="v">{{ data.finished_at or "—" }}</div></div>
+    <div><div class="k">Region lens</div><div class="v">{{ data.country.code or "not established" }}</div></div>
+  </div>
+</header>
+
+<section>
+  <h2>Executive summary</h2>
+  {% if data.headline %}<p><strong>{{ data.headline }}</strong></p>{% endif %}
+  {% if data.earliest_observed %}
+  <div class="earliest">
+    <strong>Earliest observed:</strong> {{ data.earliest_observed.occurred_at }}
+    — {{ data.earliest_observed.label or data.earliest_observed.stage }}
+    <span class="muted">({{ data.earliest_observed.stage }}, precision {{ data.earliest_observed.precision }}, sources {{ (data.earliest_observed.sources or [])|join(", ") or "unspecified" }})</span>
+    <div class="small muted">This is the earliest dated observation in the covered sources, not a claim of the first moment the activity existed.</div>
+  </div>
+  {% else %}
+  <div class="earliest"><strong>Earliest observed:</strong> no dated event was observed in the covered sources. This is not evidence that the activity did not occur.</div>
+  {% endif %}
+  <div class="grid">
+    <div class="stat"><div class="n">{{ data.counts.indicators or 0 }}</div><div class="l">indicators</div></div>
+    <div class="stat"><div class="n">{{ data.counts.edges or 0 }}</div><div class="l">evidence edges</div></div>
+    <div class="stat"><div class="n">{{ data.timeline.event_count or data.counts.events or 0 }}</div><div class="l">timeline events</div></div>
+    <div class="stat"><div class="n">{{ data.counts.sightings or 0 }}</div><div class="l">public sightings</div></div>
+    <div class="stat"><div class="n">{{ data.coverage.ran|length }}</div><div class="l">providers ran</div></div>
+    <div class="stat"><div class="n">{{ data.counts.evidence or 0 }}</div><div class="l">captures</div></div>
+  </div>
+  {% if data.truncated %}<div class="warn"><strong>Budget truncated.</strong> The graph is intentionally incomplete; expand coverage or raise the investigation limits before drawing conclusions about scale.</div>{% endif %}
+  <h3>Coverage at a glance</h3>
+  <p>{{ data.coverage.ran|length }} ran · {{ data.coverage.skipped|length }} skipped · {{ data.coverage.failed|length }} failed. {{ data.coverage.note }}</p>
+  {% if data.coverage.skipped %}<p class="small muted">Skipped: {{ data.coverage.skipped|join(", ") }}</p>{% endif %}
+  {% if data.coverage.failed %}<p class="small muted">Failed: {{ data.coverage.failed|join(", ") }}</p>{% endif %}
+</section>
+
+<section>
+  <h2>Earliest observed timeline</h2>
+  {% if data.timeline.events %}
+  <p class="small muted">{{ data.timeline.wording.note }}</p>
+  <table>
+    <thead><tr><th>Occurred (UTC)</th><th>Stage</th><th>Observation</th><th>Detail</th><th>Sources</th><th>Precision</th><th>Link</th></tr></thead>
+    <tbody>
+    {% for row in data.timeline.events %}
+      <tr>
+        <td class="mono">{{ row.occurred_at }}</td>
+        <td>{{ row.stage }}</td>
+        <td>{{ row.label }}</td>
+        <td>{% if row.detail %}{{ row.detail }}{% endif %}{% if row.indicator_value %}<div class="mono">{{ row.indicator_value }}</div>{% endif %}</td>
+        <td>{{ (row.sources or [])|join(", ") }}</td>
+        <td>{{ row.precision }}</td>
+        <td>{% if row.url %}<a href="{{ row.url|safe_url }}" rel="noopener noreferrer">source</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No dated events were observed. The absence of a row means no covered source returned a usable date; it does not establish that the infrastructure is new.</p>
+  {% endif %}
+  {% if data.timeline.gaps %}
+  <h3>Observed gaps of 90 days or more</h3>
+  <ul>{% for gap in data.timeline.gaps %}<li>{{ gap.days }} days between {{ gap.from }} ({{ gap.from_stage }}) and {{ gap.to }} ({{ gap.to_stage }})</li>{% endfor %}</ul>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Infrastructure and persona graph</h2>
+  {% if data.top_edges %}
+  <p class="small muted">Top observations by recorded edge confidence. Every edge carries its provider, relation, selector strength, evidence reference and confidence.</p>
+  <table>
+    <thead><tr><th>From</th><th>Relation</th><th>To</th><th>Provider</th><th>Strength</th><th>Confidence</th><th>Evidence</th></tr></thead>
+    <tbody>
+    {% for edge in data.top_edges %}
+      <tr>
+        <td><span class="mono">{{ edge.src_type }}</span><br>{{ edge.src_value }}</td>
+        <td>{{ edge.relation }}</td>
+        <td><span class="mono">{{ edge.dst_type }}</span><br>{{ edge.dst_value }}</td>
+        <td>{{ edge.provider }}</td>
+        <td>{{ edge.selector_strength }}</td>
+        <td>{{ "%.2f"|format(edge.confidence or 0) }}</td>
+        <td class="mono">{{ edge.evidence_id or "—" }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No graph edges were materialized. That means no covered provider returned an observation for this seed in this run; it does not mean the indicator is benign.</p>
+  {% endif %}
+  {% if data.graph.nodes %}
+  <h3>All materialized indicators</h3>
+  <table>
+    <thead><tr><th>Type</th><th>Value</th><th>Depth</th><th>Path confidence</th><th>Context only</th><th>Tags</th></tr></thead>
+    <tbody>
+    {% for node in data.graph.nodes %}
+      <tr><td>{{ node.type }}</td><td class="mono">{{ node.value }}</td><td>{{ node.depth }}</td><td>{{ "%.2f"|format(node.path_confidence or 0) }}</td><td>{{ "yes" if node.context_only else "no" }}</td><td>{{ (node.tags or [])|join(", ") }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Public sightings and persona roles</h2>
+  {% if data.sightings %}
+  <p class="small muted">{{ data.roles.note }} Only public posts are recorded; author attribution is a lead, not an identification.</p>
+  <table>
+    <thead><tr><th>Posted (UTC)</th><th>Platform</th><th>Author</th><th>Role</th><th>Excerpt</th><th>Link</th></tr></thead>
+    <tbody>
+    {% for row in data.sightings %}
+      <tr>
+        <td class="mono">{{ row.posted_at or "unknown" }}</td>
+        <td>{{ row.platform }}</td>
+        <td>{{ row.author_handle or "unknown" }}</td>
+        <td>{{ row.role_label }} <span class="muted small">({{ row.role }})</span></td>
+        <td>{{ row.text_excerpt }}</td>
+        <td>{% if row.post_url %}<a href="{{ row.post_url|safe_url }}" rel="noopener noreferrer">post</a>{% endif %}{% if row.archive_snapshot_url %} · <a href="{{ row.archive_snapshot_url|safe_url }}" rel="noopener noreferrer">archive</a>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No public sightings matched the covered selectors. This is a coverage outcome, not a finding that nobody discussed the campaign.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Provider coverage (mandatory)</h2>
+  <p>{{ data.coverage.note }}</p>
+  {% if data.coverage.rows %}
+  <table>
+    <thead><tr><th>Provider</th><th>Category</th><th>Status</th><th>Requests</th><th>Observations</th><th>Duration</th><th>Reason / error</th></tr></thead>
+    <tbody>
+    {% for row in data.coverage.rows %}
+      <tr>
+        <td>{{ row.provider }}</td><td>{{ row.category }}</td>
+        <td><span class="status {{ row.status }}">{{ row.status }}</span></td>
+        <td>{{ row.requests }}</td><td>{{ row.observations }}</td><td>{{ row.duration_ms }} ms</td>
+        <td>{{ row.reason or "—" }}{% if row.errors %}<div class="small muted">{{ row.errors|join("; ") }}</div>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p><strong>No provider coverage was recorded for this investigation.</strong> No source was successfully consulted, so this report cannot support an absence-of-evidence conclusion.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Evidence captures</h2>
+  {% if data.evidence %}
+  <p class="small muted">The report lists capture metadata and digests. Raw response bodies remain in the local evidence store and are not embedded here.</p>
+  <table>
+    <thead><tr><th>Retrieved (UTC)</th><th>Provider</th><th>URL / request</th><th>SHA-256</th><th>Size</th><th>Reference</th></tr></thead>
+    <tbody>
+    {% for row in data.evidence %}
+      <tr>
+        <td class="mono">{{ row.retrieved_at }}</td><td>{{ row.provider }}</td>
+        <td class="mono">{% if row.url %}{{ row.url }}{% else %}{{ row.request }}{% endif %}</td>
+        <td class="mono">{{ row.sha256 }}</td><td>{{ row.size_bytes }} B</td>
+        <td class="mono">{{ row.download_ref }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p>No raw captures were stored for this run.</p>{% endif %}
+</section>
+
+{% if data.kits %}
+<section>
+  <h2>Kit analysis</h2>
+  <table>
+    <thead><tr><th>URL</th><th>SHA-256</th><th>Brand</th><th>Exfil email(s)</th><th>Telegram bot(s)</th><th>Credential artifacts</th><th>Notes</th></tr></thead>
+    <tbody>
+    {% for kit in data.kits %}
+      <tr><td class="mono">{{ kit.url }}</td><td class="mono">{{ kit.kit_sha256 or "—" }}</td><td>{{ kit.brand or "—" }}</td>
+      <td>{{ (kit.exfil_emails or [])|join(", ") or "—" }}</td><td>{{ (kit.telegram_bots or [])|join(", ") or "—" }}</td>
+      <td>{{ kit.credential_exposure_count or 0 }}</td><td>{{ kit.notes or "—" }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section>
+  <h2>Assessment limitations</h2>
+  <div class="limit">
+    <ul>{% for item in data.limitations %}<li>{{ item }}</li>{% endfor %}</ul>
+  </div>
+  {% if data.warnings %}
+  <h3>Run warnings</h3><ul>{% for warning in data.warnings[:40] %}<li>{{ warning }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if data.stoplist_hits %}<p class="small muted">{{ data.stoplist_hits }} shared-infrastructure or stop-list hit(s) were kept context-only and expanded only under the configured rules.</p>{% endif %}
+  <p class="small muted">Report settings: company {{ data.company }} · TLP:{{ data.tlp|upper }} · region lens {{ data.country.code or "not established" }} ({{ data.country.source }}){% if data.cert_contact %} · configured CERT contact {{ data.cert_contact }}{% endif %}.</p>
+</section>
+
+<footer>{{ data.company }} · PhishTrace {{ data.tool.version }} · generated {{ data.generated_at }} · all timestamps UTC unless stated · {{ data.report_id }}</footer>
+</div>
+</body>
+</html>

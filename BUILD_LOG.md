@@ -398,3 +398,77 @@ Known limits: the live event deque is in memory, so after a server restart a
   public channel preview.
 * Hudson Rock results are aggregated (family counts and dates) so no stolen
   credentials or victim hostnames enter the database.
+
+## Phase 7 — reporting, STIX/MISP/OpenCTI, abuse drafting
+
+Built a reporting layer where every renderer consumes one JSON-safe context dict,
+so HTML, PDF, Markdown, text, CSV, JSON, STIX 2.1 and MISP cannot drift apart.
+
+* `phishtrace/reports/context.py` — `build_report_data()` merges the durable
+  export (indications, edges, sightings, kits, evidence) with the timeline
+  merger and the coverage record. Renderers never touch the database or the
+  network. Includes `report_filename()` (slugged, fixed extension map) and
+  `deterministic_uuid()` (`uuid5` over a fixed namespace) so re-exports are
+  idempotent in a TIP.
+* `phishtrace/reports/render.py` — HTML (Jinja autoescape, standalone inline
+  CSS, CSP `default-src 'none'`), PDF, Markdown, text, CSV (formula-injection
+  guarded by a leading apostrophe for `= + - @` cells), JSON, plus the bundle
+  writer with a manifest of size and SHA-256 per file.
+* `phishtrace/reports/stix.py` — STIX 2.1 bundle with `identity`, `indicator`
+  (standard SCO patterns; `x-…` custom SCO names only where no standard
+  observable exists), `relationship` per graph edge, a `note` carrying coverage
+  and a `report` object referencing every emitted indicator.
+* `phishtrace/reports/misp.py`, `opencti.py` — MISP event mapping (`to_ids` is
+  false for context-only stop-list nodes, comment says why) and an OpenCTI
+  GraphQL bundle push. Both pushes are opt-in, disabled by default, and raise
+  `IntegrationError` without echoing the API key on failure.
+* `phishtrace/reports/abuse.py` — drafts only, never sends. Hosting, registrar,
+  certificate-authority and national-CERT targets are derived from recorded
+  evidence plus explicitly configured contacts; addresses are never guessed
+  from an organisation name. Emails defang indicators in the body and attach
+  the exact-indicator JSON report.
+* `phishtrace/reports/templates/` — `report.html.j2`, `report.md.j2`.
+* API: `GET /api/investigations/{id}/reports`, `GET …/report?format=…`
+  (download or `inline=1` with CSP + `frame-ancestors 'none'`),
+  `GET …/abuse` (JSON preview or ZIP), `POST …/export/{misp,opencti}` with
+  push gated behind explicit configuration.
+* CLI: `phishtrace report`, `phishtrace abuse`, `phishtrace export`.
+* UI: report panel in the overview tab with per-format links; `wireReportLinks`
+  builds URLs from the investigation id only.
+* `phishtrace/tests/test_phase7_reports.py` — 24 tests: context merging and
+  coverage precedence, every renderer, CSV injection guard, HTML escaping of a
+  hostile indicator, STIX shape/determinism/quote escaping, MISP mapping and
+  redaction, OpenCTI gating, abuse target derivation and EML headers, bundle
+  manifest integrity, API status codes and CSP.
+
+Bugs found and fixed while testing:
+
+* Coverage reported providers as `enabled` because the static availability row
+  won over the run's own `ran`/`skipped`/`failed` lists. The run's lists are now
+  authoritative, and an `enabled` row with no recorded request becomes
+  `skipped` with a reason instead of pretending it ran.
+* STIX custom SCO types were emitted with a trailing hyphen
+  (`x-phone-number-:value`), which is not the documented naming. They are now
+  `x-phone-number`, `x-telegram-account`, etc.; the test asserts the custom type
+  inside the pattern, where STIX actually allows it.
+* Abuse targeting picked a stop-listed CDN (`context_only` node) as a hosting
+  provider. Context-only nodes are now excluded from target derivation.
+* A configured `company` containing CRLF and `Bcc:` survived into the `From`
+  display name. Display names are now stripped of control characters and
+  address-delimiters before the header is built.
+* Certificate authority and national CERT were one target, so a CA draft could
+  be addressed to a CERT inbox (or the reverse). They are now separate targets:
+  the issuer is manual unless a CA abuse role is configured, and a CERT draft is
+  created only for an explicitly configured country contact.
+* `build_abuse_package()` produced no attachment unless the caller passed one,
+  even with `abuse_include_attachment: true`. It now renders the JSON report
+  itself.
+
+Verification: `185 passed` (phases 1–7), one third-party Starlette/httpx
+deprecation warning. `node --check` on the UI bundle, `compileall` on the
+package, and `git diff --check` are clean. No test contacts a live provider,
+MISP or OpenCTI instance; both push paths use `httpx.MockTransport`.
+
+Known limits: the PDF renderer is dependency-light and produces a simple
+text-flow document rather than a designed layout; MISP/OpenCTI payloads follow
+the documented shapes but were not pushed to a live instance in this phase.

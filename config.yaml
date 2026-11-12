@@ -58,12 +58,27 @@ stoplists:
 reports:
   company: PhishTrace
   formats: [html, pdf, json, stix, md, txt, csv]
-  cert_contacts: {}          # optional: {NG: "cert@example.gov.ng", ...}
+  tlp: CLEAR                # report marking: CLEAR | GREEN | AMBER | AMBER+STRICT | RED
+  cert_contacts: {}          # optional: {"NG": "cert@example.gov.ng", "US": "..."} by ISO-3166 alpha-2
+  # Abuse package recipients. Addresses are never guessed: map the roles/ASNs
+  # you have verified. Unmapped targets are listed for manual review.
+  abuse_contacts: {}         # {registrar: "abuse@registrar.example", hosting: "...", platform: "..."}
+  hosting_contacts: {}       # {"AS13335": "abuse@cloudflare.example", "Some Hosting LLC": "..."}
+  from_address: "phishtrace@localhost"
+  reply_to: ""
+  abuse_include_attachment: true
   opencti:
     enabled: false
     url: ""
     token_env: OPENCTI_TOKEN
     verify_tls: true
+    timeout: 30
+  misp:
+    enabled: false
+    url: ""
+    key_env: MISP_API_KEY
+    verify_tls: true
+    timeout: 30
   llm_proxy:
     enabled: false
     endpoint: ""

@@ -206,6 +206,171 @@ def cmd_providers(args) -> int:
     return 0
 
 
+def _investigation_id(repo, args) -> str:
+    value = getattr(args, "investigation_id", None)
+    if value:
+        return value
+    if getattr(args, "latest", False):
+        rows = repo.list_investigations(limit=1)
+        if rows:
+            return rows[0]["id"]
+    raise ValueError("no investigation id supplied (pass an id or --latest)")
+
+
+def _format_list(values) -> list[str] | None:
+    if not values:
+        return None
+    selected: list[str] = []
+    for value in values:
+        for item in str(value).split(","):
+            item = item.strip()
+            if item:
+                selected.append(item)
+    return selected or None
+
+
+def cmd_report(args) -> int:
+    config = load_config(args.config, validate=False)
+    if args.data_dir:
+        config.data_dir = Path(args.data_dir)
+    repo = _bootstrap(config)
+    from phishtrace.reports import ReportNotFound, write_report_bundle
+
+    try:
+        investigation_id = _investigation_id(repo, args)
+        manifest = write_report_bundle(
+            repo,
+            investigation_id,
+            settings=config.reports,
+            output_dir=args.output_dir or config.report_dir,
+            formats=_format_list(args.format),
+            default_region=config.default_region,
+        )
+    except (ReportNotFound, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+        return 0
+    print(f"Reports for {manifest['investigation_id']} -> {manifest['output_dir']}")
+    for item in manifest.get("files") or []:
+        print(f"  {item['format']:<6} {item['filename']}  {item['size']:>9} bytes  sha256 {item['sha256'][:16]}...")
+    for item in manifest.get("errors") or []:
+        print(f"  ! {item['format']}: {item['error']}", file=sys.stderr)
+    print("Note: all report dates are 'earliest observed', and coverage/skipped reasons are included.")
+    return 0 if not manifest.get("errors") else 1
+
+
+def cmd_abuse(args) -> int:
+    config = load_config(args.config, validate=False)
+    if args.data_dir:
+        config.data_dir = Path(args.data_dir)
+    repo = _bootstrap(config)
+    from phishtrace.reports import ReportNotFound, build_report_data, render_report, write_abuse_package
+
+    try:
+        investigation_id = _investigation_id(repo, args)
+        data = build_report_data(
+            repo,
+            investigation_id,
+            settings=config.reports,
+            default_region=config.default_region,
+        )
+    except (ReportNotFound, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    output = Path(args.out) if args.out else config.report_dir / investigation_id / "abuse"
+    attachment = render_report(data, "json") if config.reports.abuse_include_attachment else None
+    manifest = write_abuse_package(output, data, config.reports, json_attachment=attachment)
+    archive = None
+    if args.zip:
+        import zipfile
+        archive = output.with_suffix(".zip")
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(output.iterdir()):
+                if path.is_file():
+                    zf.write(path, arcname=path.name)
+        manifest["archive"] = str(archive)
+    if args.json:
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+        return 0
+    print(f"Abuse drafts for {investigation_id} -> {output}")
+    print(f"  targets (with configured address): {len(manifest.get('emails') or [])}")
+    print(f"  targets needing manual review   : {len(manifest.get('manual_review') or [])}")
+    if archive:
+        print(f"  archive                         : {archive}")
+    print("No message was sent. Review every draft and confirm the recipient before use.")
+    return 0
+
+
+def cmd_export(args) -> int:
+    config = load_config(args.config, validate=False)
+    if args.data_dir:
+        config.data_dir = Path(args.data_dir)
+    repo = _bootstrap(config)
+    from phishtrace.reports import (
+        IntegrationError,
+        ReportNotFound,
+        build_misp_event,
+        build_report_data,
+        build_stix_bundle,
+        push_misp,
+        push_stix_bundle,
+    )
+
+    try:
+        investigation_id = _investigation_id(repo, args)
+        data = build_report_data(
+            repo,
+            investigation_id,
+            settings=config.reports,
+            default_region=config.default_region,
+        )
+    except (ReportNotFound, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    output = Path(args.output_dir) if args.output_dir else config.report_dir / investigation_id
+    output.mkdir(parents=True, exist_ok=True)
+    result: dict = {"investigation_id": investigation_id, "target": args.target}
+    try:
+        if args.target == "stix":
+            bundle = build_stix_bundle(data)
+            path = output / f"phishtrace-{investigation_id}.stix.json"
+            path.write_text(json.dumps(bundle, indent=2, ensure_ascii=False), encoding="utf-8")
+            result["file"] = str(path)
+            result["objects"] = len(bundle.get("objects") or [])
+            if args.push:
+                settings = dict(config.reports.opencti or {})
+                if not settings.get("enabled"):
+                    raise IntegrationError("OpenCTI push is disabled in reports.opencti.enabled")
+                token = config.api_key(str(settings.get("token_env") or "OPENCTI_TOKEN"))
+                result["push"] = asyncio.run(push_stix_bundle(bundle, settings, token=token))
+        else:
+            event = build_misp_event(data)
+            path = output / f"phishtrace-{investigation_id}.misp.json"
+            path.write_text(json.dumps(event, indent=2, ensure_ascii=False), encoding="utf-8")
+            result["file"] = str(path)
+            result["attributes"] = len((event.get("Event") or {}).get("Attribute") or [])
+            if args.push:
+                settings = dict(config.reports.misp or {})
+                if not settings.get("enabled"):
+                    raise IntegrationError("MISP push is disabled in reports.misp.enabled")
+                api_key = config.api_key(str(settings.get("key_env") or "MISP_API_KEY"))
+                result["push"] = asyncio.run(push_misp(event, settings, api_key=api_key))
+    except IntegrationError as exc:
+        print(f"export failed: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    else:
+        print(f"Wrote {result['target']} export for {investigation_id} -> {result['file']}")
+        if "push" in result:
+            print(f"  pushed: HTTP {result['push'].get('status_code')}")
+        else:
+            print("  not pushed (pass --push to send it to the configured platform).")
+    return 0
+
+
 def cmd_purge(args) -> int:
     config = load_config(args.config, validate=False)
     repo = _bootstrap(config)
@@ -254,6 +419,34 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("providers", help="list provider availability")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_providers)
+
+    p = sub.add_parser("report", help="render HTML/PDF/JSON/STIX/MISP/MD/TXT/CSV reports")
+    p.add_argument("investigation_id", nargs="?", help="investigation id (omit with --latest)")
+    p.add_argument("--latest", action="store_true", help="use the most recent investigation")
+    p.add_argument("--format", action="append", help="format (repeatable or comma-separated); default: reports.formats")
+    p.add_argument("--output-dir", help="directory for the report bundle (default: <data>/reports/<id>)")
+    p.add_argument("--data-dir")
+    p.add_argument("--json", action="store_true", help="print the manifest as JSON")
+    p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("abuse", help="build abuse-report email drafts and a manifest")
+    p.add_argument("investigation_id", nargs="?", help="investigation id (omit with --latest)")
+    p.add_argument("--latest", action="store_true", help="use the most recent investigation")
+    p.add_argument("--out", help="output directory (default: <data>/reports/<id>/abuse)")
+    p.add_argument("--zip", action="store_true", help="also write a .zip of the drafts")
+    p.add_argument("--data-dir")
+    p.add_argument("--json", action="store_true", help="print the manifest as JSON")
+    p.set_defaults(func=cmd_abuse)
+
+    p = sub.add_parser("export", help="write and optionally push a STIX bundle or MISP event")
+    p.add_argument("investigation_id", nargs="?", help="investigation id (omit with --latest)")
+    p.add_argument("--latest", action="store_true", help="use the most recent investigation")
+    p.add_argument("--target", choices=("stix", "misp"), default="stix")
+    p.add_argument("--push", action="store_true", help="push to the configured OpenCTI (stix) or MISP platform")
+    p.add_argument("--output-dir", help="directory for the export file")
+    p.add_argument("--data-dir")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("purge", help="delete investigations older than the retention period")
     p.add_argument("--days", type=int)

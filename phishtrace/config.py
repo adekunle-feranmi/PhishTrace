@@ -158,10 +158,21 @@ class ProviderSettings(BaseModel):
 class ReportConfig(BaseModel):
     company: str = "PhishTrace"
     formats: list[str] = Field(default_factory=lambda: ["html", "pdf", "json", "stix", "md", "txt", "csv"])
+    tlp: str = "CLEAR"
     opencti: dict[str, Any] = Field(default_factory=dict)
     misp: dict[str, Any] = Field(default_factory=dict)
     llm_classifier: dict[str, Any] = Field(default_factory=lambda: {"enabled": False})
     cert_contacts: dict[str, str] = Field(default_factory=dict)
+    #: Role -> mailbox, e.g. {"registrar": "abuse@registrar.example"}. No address
+    #: is ever guessed from an organisation name; unconfigured targets are shown
+    #: as manual-review items in the abuse package.
+    abuse_contacts: dict[str, str] = Field(default_factory=dict)
+    #: ASN number or organisation name -> mailbox at the hosting provider.
+    hosting_contacts: dict[str, str] = Field(default_factory=dict)
+    from_address: str = "phishtrace@localhost"
+    reply_to: str = ""
+    #: Include a JSON attachment with the machine-readable findings in .eml files.
+    abuse_include_attachment: bool = True
 
 
 class Config(BaseModel):

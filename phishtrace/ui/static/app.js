@@ -604,6 +604,7 @@
     if (started) started.textContent = inv.started_at ? `started ${fmtDate(inv.started_at)}` : "";
     const raw = $("#raw-json");
     if (raw) raw.href = `/api/investigations/${encodeURIComponent(inv.id)}`;
+    if (inv.id) wireReportLinks(inv.id);
     const mode = $("#ov-mode");
     if (mode) mode.textContent = inv.finished_at ? `finished ${fmtDate(inv.finished_at)}` : "live";
     document.title = `${shortHash(seed, 42)} · PhishTrace`;
@@ -612,6 +613,25 @@
       bar.classList.remove("indeterminate");
       bar.style.width = "100%";
     }
+  }
+
+  /* ---------------------------------------------------------------- reports */
+  function wireReportLinks(id) {
+    const base = `/api/investigations/${encodeURIComponent(id)}`;
+    const links = [
+      ["#report-html", `${base}/report?format=html&inline=1`],
+      ["#report-pdf", `${base}/report?format=pdf`],
+      ["#report-json", `${base}/report?format=json`],
+      ["#report-stix", `${base}/report?format=stix`],
+      ["#report-misp", `${base}/report?format=misp`],
+      ["#report-abuse", `${base}/abuse?download=1`],
+    ];
+    links.forEach(([selector, href]) => {
+      const link = $(selector);
+      if (!link) return;
+      link.href = href;
+      link.hidden = false;
+    });
   }
 
   function renderSummary(inv) {

@@ -138,6 +138,10 @@ select { cursor: pointer; }
 }
 .link-btn:hover { text-decoration: underline; }
 .link-button { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.report-panel { margin-top: 14px; }
+.report-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.report-links .link-button { color: var(--text); }
+.report-links .link-button:hover { color: var(--accent-2); background: rgba(56, 189, 248, .07); }
 .error {
   background: rgba(255, 123, 114, .09); border: 1px solid rgba(255, 123, 114, .4);
   color: #ffb4ae; border-radius: 8px; padding: 9px 11px; font-size: 12px; margin: 10px 0 0;
