@@ -124,7 +124,7 @@ class FetcherConfig(BaseModel):
             "/", "/logs", "/logs/", "/results", "/results/", "/result",
             "/config.php", "/config", "/.env", "/admin",
             "/panel", "/kit", "/logs.txt", "/log.txt", "/results.txt",
-            "/stolen", "/victims", "/data", "/db", "/uploads", "/temp", "/tmp",
+            "/stolen", "/victims", "/data", "/db", "/uploads", "/temp", "/tmp",  # nosec B108 - URL path list, not a temp file
             "/backup", "/kit.zip", "/kit.rar", "/kit.7z", "/backup.zip",
         ]
     )
@@ -173,6 +173,52 @@ class ReportConfig(BaseModel):
     reply_to: str = ""
     #: Include a JSON attachment with the machine-readable findings in .eml files.
     abuse_include_attachment: bool = True
+
+
+#: Field-name fragments whose values are never returned by ``Config.redacted()``.
+_SECRET_FIELD_MARKERS = (
+    "secret", "password", "passwd", "apikey", "api_key",
+    "cookie", "credential", "authorization", "auth_key",
+)
+_SECRET_EXACT_FIELDS = {"key", "token", "cookies", "cookie", "secret", "credentials"}
+_SECRET_SUFFIXES = ("_key", "_token", "_secret", "_password", "_cookie", "_cookies")
+
+
+def _is_secret_field(name: str) -> bool:
+    """True for credential-bearing field names, not for ``*_env`` pointers."""
+    lowered = str(name).lower()
+    if lowered.endswith(("_env", "_file", "_path", "_url", "_name")):
+        return False
+    if lowered in _SECRET_EXACT_FIELDS or lowered.endswith(_SECRET_SUFFIXES):
+        return True
+    return any(marker in lowered for marker in _SECRET_FIELD_MARKERS)
+
+
+def _redact_secret_fields(data: Any) -> Any:
+    """Recursively replace non-empty secret-looking values with a marker.
+
+    Used for the operator-facing config snapshot. Provider options and report
+    integrations can hold credentials (GHunt cookies, MISP/OpenCTI tokens) that
+    are not part of ``env`` and would otherwise be returned by ``/api/config``.
+    Booleans are left alone so presence flags survive redaction.
+    """
+    if isinstance(data, dict):
+        cleaned: dict[str, Any] = {}
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                cleaned[key] = _redact_secret_fields(value)
+            elif (
+                not isinstance(value, bool)
+                and value not in (None, "")
+                and _is_secret_field(str(key))
+            ):
+                cleaned[key] = "[REDACTED]"
+            else:
+                cleaned[key] = value
+        return cleaned
+    if isinstance(data, list):
+        return [_redact_secret_fields(item) for item in data]
+    return data
 
 
 class Config(BaseModel):
@@ -247,8 +293,8 @@ class Config(BaseModel):
 
     def redacted(self) -> dict[str, Any]:
         """Config snapshot safe to persist with an investigation."""
-        data = self.model_dump(mode="json", exclude={"env", "auth"})
-        auth = self.auth.model_dump()
+        data = _redact_secret_fields(self.model_dump(mode="json", exclude={"env", "auth"}))
+        auth = _redact_secret_fields(self.auth.model_dump())
         session_secret = auth.pop("session_secret", None)
         data["auth"] = {**auth, "session_secret_set": bool(self.auth.session_secret or self.auth.enabled)}
         data["api_keys_present"] = self.key_presence()

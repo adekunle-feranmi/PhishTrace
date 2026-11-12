@@ -78,6 +78,25 @@ def _owned_inv(request: Request, investigation_id: str, user: dict) -> dict:
     return inv
 
 
+def _confined_evidence_path(request: Request, raw_path: str) -> Path:
+    """Resolve a stored evidence path and require it under a managed directory.
+
+    Evidence rows are written by the server, but treating the database as
+    trusted would turn a tampered row (or a future provider bug) into arbitrary
+    file read through the evidence endpoints. Symlinks are resolved first, so a
+    link inside the evidence directory cannot point outside it either.
+    """
+    config = request.app.state.config
+    try:
+        path = Path(raw_path).resolve(strict=False)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=404, detail="evidence not found")
+    roots = (config.evidence_dir.resolve(), config.archive_dir.resolve())
+    if not any(path.is_relative_to(root) for root in roots):
+        raise HTTPException(status_code=404, detail="evidence not found")
+    return path
+
+
 def _progress_payload(request: Request, inv: dict, *, after: int = 0) -> dict:
     """Merge durable investigation state with the bounded live event buffer."""
     investigation_id = inv["id"]
@@ -314,7 +333,7 @@ def evidence_detail(request: Request, investigation_id: str, evidence_id: str,
     preview = ""
     if repo.evidence_store:
         try:
-            preview = repo.evidence_store.read_text(row["raw_response_path"], limit=100_000)
+            preview = repo.evidence_store.read_text(str(_confined_evidence_path(request, row["raw_response_path"])), limit=100_000)
         except OSError:
             preview = "[evidence file missing]"
     return {**row, "preview": preview}
@@ -327,7 +346,7 @@ def evidence_raw(request: Request, investigation_id: str, evidence_id: str,
     row = request.app.state.repo.get_evidence(investigation_id, evidence_id)
     if not row:
         raise HTTPException(status_code=404, detail="evidence not found")
-    path = Path(row["raw_response_path"])
+    path = _confined_evidence_path(request, row["raw_response_path"])
     if not path.exists():
         raise HTTPException(status_code=410, detail="evidence file purged")
     return FileResponse(

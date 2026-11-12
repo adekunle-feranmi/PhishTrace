@@ -428,7 +428,9 @@ class IsolatedFetcher:
 
     async def _request(self, normalized: str, pinned: str | None, cap: int):
         """Send one hop. Returns ``(response, body, truncated, sha256)``."""
-        assert self._client is not None
+        if self._client is None:
+            # ``assert`` would disappear under ``python -O``; fail closed instead.
+            raise FetchDenied("isolated fetcher is not open", rule="state")
         parts = urlsplit(normalized)
         host = (parts.hostname or "").lower()
         port = parts.port or (443 if parts.scheme == "https" else 80)

@@ -1,0 +1,50 @@
+[Unit]
+Description=PhishTrace phishing infrastructure console
+Documentation=file:/opt/phishtrace/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=phishtrace
+Group=phishtrace
+WorkingDirectory=/opt/phishtrace
+EnvironmentFile=/etc/phishtrace/phishtrace.env
+ExecStart=/opt/phishtrace/.venv/bin/phishtrace serve
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+
+# State: SQLite database, evidence bodies, archived snapshots and reports.
+StateDirectory=phishtrace
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/phishtrace
+
+# Privilege and filesystem confinement. The service never needs root, a
+# writable system tree, a home directory or extra capabilities.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -45,6 +45,7 @@ include = ["phishtrace*"]
 [tool.setuptools.package-data]
 phishtrace = [
   "reports/templates/*.j2",
+  "ui/*.html",
   "ui/static/*",
   "tests/fixtures/*",
 ]

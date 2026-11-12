@@ -18,7 +18,7 @@ sandbox, Node not required, no outbound network needed for the test suite.
 | 6 | Web UI (live progress, graph, timeline, evidence browser) | done |
 | 7 | Reports (HTML/PDF/JSON/STIX/MD/CSV), abuse reports, OpenCTI/MISP | done |
 | 8 | Phase B keyed providers and Phase C wrapped tools | done |
-| 9 | Hardening review, load test, docs, Docker, systemd | pending |
+| 9 | Hardening review, load test, docs, Docker, systemd | done |
 
 ## Phase 1 — skeleton
 
@@ -541,3 +541,102 @@ environment, so their tests use stub scripts and the parsers are verified
 against documented output shapes rather than live tool versions. Keyed providers
 are verified against mocked payloads; live API responses, quota behaviour and
 vendor-side schema changes were not exercised in this phase.
+
+## Phase 9 — hardening, load test, packaging and deployment
+
+Phase 9 closes the build: a security review with fixes, a measured load test,
+final documentation, and reproducible systemd and container deployments.
+
+### Hardening review
+
+* `bandit -r phishtrace` was run over the tree. It reports no High or Medium
+  findings. The Low findings are the deliberate best-effort `try/except/pass`
+  blocks around malformed kit markup and PDF font registration, the non-crypto
+  `random.random()` jitter used for retry backoff, a hard-coded `"password"`
+  form-field name in the kit analyzer, and the XML-escape helper used only to
+  escape report output. The `/tmp` string in the kit-path stoplist is a URL path
+  list, not a temporary file, and is annotated `# nosec B108` with the reason.
+  The remaining reports are test fixtures (hard-coded passwords, `assert`
+  statements).
+* `Config.redacted()` previously returned provider `options` and report
+  integration blocks verbatim. GHunt cookies, MISP keys, OpenCTI tokens and LLM
+  keys could therefore appear in `/api/config` (and in the config snapshot
+  persisted with an investigation) even though `env` was excluded. The snapshot
+  now recursively replaces credential-bearing fields with `[REDACTED]`, keeps
+  presence booleans and `*_env`/`*_url` pointers, and never emits the session
+  secret. This also covers future provider options without a per-provider list.
+* Evidence previews and raw downloads trusted the database path. They now
+  resolve the path and require it to remain inside the evidence or archive
+  directory; symlinks escaping either root return 404.
+* The fetcher used `assert self._client is not None`, which disappears under
+  `python -O`; it now raises `FetchDenied(rule="state")` explicitly and fails
+  closed.
+* The Content-Security-Policy allowed `cdnjs.cloudflare.com`, although the UI
+  loads only local assets. The allowlist was removed and `object-src 'none'`
+  added.
+* Forwarded-header handling was corrected: instead of disabling proxy headers
+  (which made every client behind nginx look like the proxy and turned the
+  per-IP login throttle into a shared bucket), uvicorn now trusts
+  `X-Forwarded-For` only from `PHISHTRACE_TRUSTED_PROXIES` (default loopback).
+  Direct clients cannot spoof it. `server_header=False` stops advertising
+  uvicorn.
+* `pyproject.toml` did not ship `ui/index.html` or `ui/login.html` in the wheel
+  (only `ui/static/*`), so a `pip install .` deployment would have failed to
+  render the console. The package-data list now includes `ui/*.html`; a built
+  wheel was inspected and contains both templates.
+
+### Tests
+
+`phishtrace/tests/test_phase9_hardening.py` adds four regressions: redacted
+provider/integration secrets in `/api/config`, HttpOnly/SameSite session cookie
+flags, evidence path confinement including a symlink escape, and fetcher
+fail-closed behaviour. Full suite: **227 passed**, one third-party
+Starlette/httpx deprecation warning.
+
+### Load test
+
+`scripts/loadtest.py` builds a synthetic investigation through the repository
+(no network) and times graph read, report data assembly and all eight renderers.
+On the 4 vCPU / 4 GiB sandbox with Python 3.14 / SQLite WAL:
+
+* 600 nodes, 878 edges: ingest 1,114 ms, graph read 21.6 ms, report data
+  116.6 ms, all renders ~1.05 s, 2.8 MB serialized, 13.1 MiB traced peak.
+* 60 nodes, 68 edges: ingest 105 ms, graph read 3.5 ms, report data 44 ms,
+  all renders ~0.87 s, 9.1 MiB traced peak. PDF is the slowest renderer
+  (~0.66 s at both sizes, a fixed ReportLab cost).
+
+The harness caps at 5,000 nodes and uses a temporary directory. Results and
+interpretation are in `docs/PERFORMANCE.md`.
+
+### Documentation and deployment
+
+* `README.md` rewritten: features, quick start, CLI, configuration, provider
+  phases, security defaults, architecture, testing, status and authorized use.
+* `docs/DEPLOYMENT.md`: source install, systemd, TLS nginx (SSE buffering
+  disabled), Docker Compose, backups/restore, retention, upgrades and a
+  troubleshooting table.
+* `docs/SECURITY.md`: threat model, implemented controls, residual risks
+  (sessions, SQLite, no encryption at rest, third-party tools, mocked provider
+  schemas) and a hardening checklist.
+* `Dockerfile`, `.dockerignore`, `docker-compose.yml`: Python 3.12 slim image,
+  non-root uid 10001, loopback-published port, read-only root filesystem,
+  `cap_drop: ALL`, `no-new-privileges`, named data volume and a `/health`
+  healthcheck (`scripts/healthcheck.py`).
+* `deploy/phishtrace.service` and `deploy/phishtrace.env.example`: dedicated
+  user, `StateDirectory`, `ProtectSystem=strict`, `ProtectHome`, empty
+  capability set, seccomp `@system-service` and a restrictive
+  `RestrictAddressFamilies`. `systemd-analyze verify` accepts the unit (the
+  only warning is the expected missing `/opt/phishtrace` install path in this
+  sandbox).
+
+Verification performed: full pytest suite (227 passed), `compileall` over
+`phishtrace/` and `scripts/`, `git diff --check`, wheel-content inspection, and
+a live `phishtrace serve` smoke test on 127.0.0.1:8088 (`/health` returned 200
+and `scripts/healthcheck.py` printed `ok`).
+
+Known limits: Docker/Podman are not available in this sandbox, so the image was
+not built here; the Dockerfile is syntax-reviewed and mirrors the verified wheel
+install, but a first `docker compose build` should be run on the target host.
+There is no schema-migration framework, no encryption at rest (rely on disk
+encryption) and no multi-worker session/throttle store; the application is
+single-process by design.

@@ -64,7 +64,21 @@ def cmd_serve(args) -> int:
     app = create_app(config, repo=repo)
     print(f"PhishTrace {__version__} listening on http://{config.host}:{config.port} "
           f"(auth={'on' if config.auth.enabled else 'off'}, active_fetch={config.fetcher.active_fetch})")
-    uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level.lower(), access_log=True)
+    # Forwarded headers are honored only when the immediate peer is a trusted
+    # proxy, so login throttling and audit logs see the real client behind
+    # nginx. A direct client cannot spoof X-Forwarded-For. Override the list for
+    # a proxy that connects from a container gateway address.
+    trusted_proxies = os.environ.get("PHISHTRACE_TRUSTED_PROXIES", "127.0.0.1,::1")
+    uvicorn.run(
+        app,
+        host=config.host,
+        port=config.port,
+        log_level=config.log_level.lower(),
+        access_log=True,
+        proxy_headers=True,
+        forwarded_allow_ips=trusted_proxies,
+        server_header=False,
+    )
     return 0
 
 

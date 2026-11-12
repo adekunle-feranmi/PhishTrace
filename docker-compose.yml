@@ -1,0 +1,28 @@
+services:
+  phishtrace:
+    build: .
+    image: phishtrace:latest
+    container_name: phishtrace
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      # The container must listen on all interfaces; the published port below is
+      # bound to loopback so the console stays behind a local reverse proxy.
+      PHISHTRACE_HOST: 0.0.0.0
+      PHISHTRACE_DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - phishtrace-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  phishtrace-data:
