@@ -13,6 +13,7 @@ from typing import Callable
 
 from phishtrace.config import Config
 from phishtrace.core.archiver import Archiver
+from phishtrace.core.entities import EntityResolver
 from phishtrace.core.http import ProviderHTTP, make_client
 from phishtrace.core.limits import Budget, RateLimiter
 from phishtrace.core.pivot import PivotEngine
@@ -45,6 +46,7 @@ class InvestigationRunner:
         progress: Callable[[dict], None] | None = None,
         logger: Callable[[str], None] | None = None,
         max_provider_concurrency: int = 4,
+        resolve_entities: bool = True,
     ):
         self.config = config
         self.repo = repo
@@ -54,6 +56,7 @@ class InvestigationRunner:
         self.progress = progress
         self.logger = logger
         self.max_provider_concurrency = max_provider_concurrency
+        self.resolve_entities = resolve_entities
 
     # --------------------------------------------------------------------- public
     async def run_seed(
@@ -169,6 +172,21 @@ class InvestigationRunner:
                       (archive_summary.get("warnings", []) if archive_summary else [])):
             if extra not in warnings:
                 warnings.append(extra)
+        entity_summary = None
+        if self.resolve_entities:
+            self._emit("stage.entities", investigation_id=investigation["id"])
+            try:
+                entity_summary = EntityResolver(self.repo).resolve(investigation["id"])
+            except Exception as exc:  # noqa: BLE001 - never fail a run over the entity layer
+                warnings.append(f"entity resolution failed: {_error_text(exc)}")
+            if entity_summary:
+                summary["entities"] = {
+                    "identity_entities": entity_summary.get("identity_entities", 0),
+                    "provider_contacts": entity_summary.get("provider_contacts", 0),
+                    "members": entity_summary.get("members_added", 0),
+                    "links": entity_summary.get("links_added", 0),
+                    "case_entity_id": entity_summary.get("case_entity_id"),
+                }
         summary["warnings"] = warnings[:50]
         status = "partial" if stats.truncated else "completed"
         self.repo.finalize(

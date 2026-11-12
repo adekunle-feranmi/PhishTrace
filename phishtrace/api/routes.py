@@ -291,6 +291,96 @@ def graph(request: Request, investigation_id: str, user: dict = Depends(current_
     return request.app.state.repo.graph(investigation_id)
 
 
+def _visible_entity(request: Request, row: dict, user: dict) -> bool:
+    """Admins see every entity; analysts only entities in cases they own."""
+    if user.get("is_admin"):
+        return True
+    username = user.get("username")
+    cases = request.app.state.repo.entity_cases(row["id"])
+    return any(case.get("owner") == username for case in cases)
+
+
+@router.get("/intake")
+def preview_intake(
+    request: Request,
+    seed: str = Query(min_length=1, max_length=2048),
+    kind: str | None = Query(default=None, max_length=32),
+    user: dict = Depends(current_user),
+):
+    """Deterministic decomposition of one seed: no network, no writes."""
+    from phishtrace.core.intake import plan_intake
+
+    plan = plan_intake(seed, kind=kind)
+    if not plan.seed_type:
+        raise HTTPException(status_code=422, detail="seed could not be normalized")
+    return plan.as_dict()
+
+
+@router.get("/entities")
+def list_entities(
+    request: Request,
+    kind: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    min_investigations: int = Query(default=0, ge=0),
+    q: str | None = Query(default=None, max_length=200),
+    user: dict = Depends(current_user),
+):
+    """Cross-investigation entity index, newest and most-corroborated first."""
+    if kind and kind not in ("identity", "infrastructure", "case"):
+        raise HTTPException(status_code=422, detail="kind must be identity, infrastructure or case")
+    repo = request.app.state.repo
+    fetch = min(500, limit * 5) if q else limit
+    rows = repo.list_entities(kind=kind, limit=fetch, min_investigations=min_investigations)
+    rows = [row for row in rows if _visible_entity(request, row, user)]
+    if q:
+        needle = q.strip().lower()
+        rows = [
+            row for row in rows
+            if needle in str(row.get("label") or "").lower()
+            or needle in str(row.get("key") or "").lower()
+        ]
+    rows = rows[:limit]
+    return {"entities": rows, "count": len(rows)}
+
+
+@router.get("/entities/{entity_id}")
+def entity_detail(request: Request, entity_id: str, user: dict = Depends(current_user)):
+    repo = request.app.state.repo
+    row = repo.get_entity(entity_id)
+    if not row:
+        found = repo.get_entity_by_key(entity_id)
+        row = repo.get_entity(found["id"]) if found else None
+    if not row or not _visible_entity(request, row, user):
+        raise HTTPException(status_code=404, detail="entity not found")
+    row["cases"] = repo.entity_cases(row["id"])
+    return row
+
+
+@router.get("/investigations/{investigation_id}/entities")
+def investigation_entities(
+    request: Request,
+    investigation_id: str,
+    user: dict = Depends(current_user),
+):
+    _owned_inv(request, investigation_id, user)
+    rows = request.app.state.repo.entities_for_investigation(investigation_id)
+    return {"entities": rows, "count": len(rows)}
+
+
+@router.get("/investigations/{investigation_id}/suspects")
+def investigation_suspects(
+    request: Request,
+    investigation_id: str,
+    limit: int = Query(default=10, ge=1, le=50),
+    user: dict = Depends(current_user),
+):
+    """Ranked identity candidates with the rules and caveats behind each score."""
+    _owned_inv(request, investigation_id, user)
+    from phishtrace.core.entities import rank_suspects
+
+    return rank_suspects(request.app.state.repo, [investigation_id], limit=limit)
+
+
 @router.get("/investigations/{investigation_id}/sightings")
 def sightings(request: Request, investigation_id: str, user: dict = Depends(current_user)):
     _owned_inv(request, investigation_id, user)

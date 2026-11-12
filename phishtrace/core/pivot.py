@@ -39,6 +39,7 @@ from phishtrace.core.scoring import (
 )
 from phishtrace.core.stoplist import StopDecision, StopList
 from phishtrace.models import NormalizedIndicator, Observation, ProviderResult, iso, utcnow
+from phishtrace.core.intake import plan_intake
 from phishtrace.normalizer import normalize_indicator
 from phishtrace.providers.base import BaseProvider
 from phishtrace.providers.context import ProviderContext
@@ -266,31 +267,22 @@ class PivotEngine:
         return (item[0], item[1], item[2], item[3])
 
     async def _queue_derived(self, seed: NormalizedIndicator, seed_row: dict, *, depth: int) -> None:
-        """Derive hostname/domain selectors from URL and email seeds.
+        """Derive the selectors contained inside the submitted link or address.
 
-        Without this a URL seed would only reach providers that accept URLs,
-        which is a small minority of the catalogue.
+        Intake is deterministic and bounded: a URL yields at most a handful of
+        selectors, each with the relation and reason that produced it.  Without
+        this a URL seed would only reach providers that accept URLs, which is a
+        small minority of the catalogue.
         """
-        derived: list[tuple[str, str]] = []
-        if seed.type == "url":
-            from urllib.parse import urlsplit
+        plan = plan_intake(seed.value, kind=seed.type)
+        for note in plan.notes:
+            self.warnings.append(note)
 
+        for item in plan.derived:
             try:
-                host = urlsplit(seed.normalized).hostname or ""
+                child = normalize_indicator(item.value, kind=item.type)
             except ValueError:
-                host = ""
-            if host:
-                derived.append((host, "url-host"))
-        elif seed.type == "email":
-            domain = seed.normalized.rsplit("@", 1)[-1]
-            if domain:
-                derived.append((domain, "email-domain"))
-
-        for raw_host, relation in derived:
-            try:
-                child = normalize_indicator(raw_host)
-            except ValueError:
-                self.warnings.append(f"could not derive {relation} selector from {seed.normalized}")
+                self.warnings.append(f"could not derive {item.relation} selector from {seed.normalized}")
                 continue
             if child.key() == seed.key():
                 continue
@@ -299,16 +291,16 @@ class PivotEngine:
                 parent=seed_row,
                 parent_path=1.0,
                 child=child,
-                raw_value=raw_host,
+                raw_value=item.value,
                 provider="normalizer",
-                relation=relation,
-                strength="strong",
-                confidence=0.95,
+                relation=item.relation,
+                strength=item.strength,
+                confidence=item.confidence,
                 decision=decision,
-                context_only=not decision.expand,
+                context_only=item.context_only or not decision.expand,
                 depth=depth + 1,
-                tags=["derived"],
-                note=f"derived {relation} from {seed.type}",
+                tags=list(item.tags) or ["derived"],
+                note=item.reason,
             )
             if derived_created:
                 self.stats.nodes += 1
@@ -316,9 +308,10 @@ class PivotEngine:
                 self.stats.stoplist_hits += 1
                 self.stats.context_only += 1
                 continue
+            path = min(1.0, float(item.confidence))
             ok, _reason = should_expand(
-                strength="strong",
-                path=0.95,
+                strength=item.strength,
+                path=path,
                 depth=depth + 1,
                 context_only=False,
                 stop_expand=True,
@@ -328,7 +321,7 @@ class PivotEngine:
                 path_floor=float(getattr(self.config.limits, "path_confidence_floor", DEFAULT_PATH_FLOOR)),
             )
             if ok:
-                self._enqueue(row, depth=depth + 1, path=0.95, priority=-950)
+                self._enqueue(row, depth=depth + 1, path=path, priority=-1000 + item.priority)
 
     def _find_node(self, type_name: str, normalized: str) -> dict | None:
         return self._rows.get((type_name, normalized))

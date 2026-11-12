@@ -14,10 +14,14 @@ runner makes those tools usable from a service inside a fixed envelope:
   an API key exported for an HTTP provider cannot leak into a subprocess and a
   ``*_proxy`` variable cannot silently reroute its traffic.
 * **Bounded output and time.**  Stdout/stderr are drained with a hard byte cap;
-  the process group is killed on timeout or when the cap is hit.  Tools that
-  spawn children (theharvester, spiderfoot) die with the group.
+  the process tree is killed on timeout or when the cap is hit.  Tools that
+  spawn children (theharvester, spiderfoot) die with the tree: on POSIX via the
+  process group, on Windows via a kill-on-close job object.
 * **Scratch cwd.**  Each run gets its own directory, removed afterwards.  Tools
   that insist on writing ``<target>.json`` next to the binary still work.
+
+The same code path is exercised on both platforms, which matters because the
+tool wrappers are where a phish-tracing box does most of its pivoting.
 """
 
 from __future__ import annotations
@@ -27,10 +31,15 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from phishtrace.tools import _winjob
+
+IS_WINDOWS = os.name == "nt"
 
 #: Selectors are ASCII in this codebase (IDNs are punycoded by the normalizer).
 _TARGET_RE = re.compile(r"^[\x21-\x7e]{1,512}$")
@@ -40,6 +49,14 @@ DEFAULT_MAX_OUTPUT = 4_000_000  # 4 MB per stream
 DEFAULT_TIMEOUT = 120.0
 _READ_CHUNK = 65_536
 _KILL_GRACE = 3.0
+
+#: Variables a Windows child needs before it can even start (CRT, ``cmd.exe``,
+#: the loader).  They carry no secrets, so they survive sanitisation.
+_WIN_ENV_ESSENTIALS = (
+    "SystemRoot", "SystemDrive", "windir", "COMSPEC", "PATHEXT",
+    "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "CommonProgramFiles",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER",
+)
 
 
 class ToolNotAvailable(RuntimeError):
@@ -118,19 +135,29 @@ def validate_target(value: Any, *, field_name: str = "target") -> str:
 
 
 def _safe_env(workdir: Path) -> dict[str, str]:
-    path = os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    path = os.environ.get("PATH") or os.defpath
     # Keep the search path, drop everything else: credentials, proxies and
-    # tool-specific variables stay in the parent process.
-    return {
+    # tool-specific variables stay in the parent process.  HOME/TMP* point at
+    # the scratch directory so tools that cache state cannot write outside it.
+    env = {
         "PATH": path,
         "HOME": str(workdir),
+        "USERPROFILE": str(workdir),
         "TMPDIR": str(workdir),
+        "TEMP": str(workdir),
+        "TMP": str(workdir),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TZ": "UTC",
         "PYTHONIOENCODING": "utf-8",
         "NO_COLOR": "1",
     }
+    if IS_WINDOWS:
+        for name in _WIN_ENV_ESSENTIALS:
+            value = os.environ.get(name)
+            if value:
+                env[name] = value
+    return env
 
 
 def _resolve_binary(name: str, configured: str | None) -> str:
@@ -172,32 +199,68 @@ async def _drain(stream: asyncio.StreamReader | None, cap: int, on_exceed) -> tu
     return b"".join(chunks).decode("utf-8", errors="replace"), truncated
 
 
-async def _terminate(proc: asyncio.subprocess.Process) -> None:
-    if proc.returncode is not None:
-        return
+def _signal_group(proc: asyncio.subprocess.Process, sig: int) -> None:
+    """Best-effort signal to the POSIX process group led by ``proc``."""
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError, OSError):
         try:
-            proc.terminate()
-        except ProcessLookupError:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _kill_tree_now(proc: asyncio.subprocess.Process, job: _winjob.Job | None) -> None:
+    """Synchronous kill used from the output-cap callback."""
+    if IS_WINDOWS:
+        if job is not None and job.terminate():
             return
-    try:
-        await asyncio.wait_for(proc.wait(), _KILL_GRACE)
-        return
-    except asyncio.TimeoutError:
-        pass
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
         try:
             proc.kill()
-        except ProcessLookupError:
-            return
+        except (ProcessLookupError, OSError):
+            pass
+        return
+    _signal_group(proc, signal.SIGTERM)
+
+
+async def _wait_quietly(proc: asyncio.subprocess.Process, timeout: float) -> bool:
     try:
-        await asyncio.wait_for(proc.wait(), _KILL_GRACE)
+        await asyncio.wait_for(proc.wait(), timeout)
+        return True
     except asyncio.TimeoutError:
-        pass
+        return False
+
+
+async def _terminate(
+    proc: asyncio.subprocess.Process, job: _winjob.Job | None = None
+) -> None:
+    """Stop a tool and everything it spawned, without leaking the tree."""
+    if proc.returncode is not None:
+        return
+
+    if IS_WINDOWS:
+        # Windows has no SIGTERM: terminate the job (whole tree) or the child.
+        if job is not None and job.terminate():
+            await _wait_quietly(proc, _KILL_GRACE)
+            return
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            return
+        if await _wait_quietly(proc, _KILL_GRACE):
+            return
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        await _wait_quietly(proc, _KILL_GRACE)
+        return
+
+    _signal_group(proc, signal.SIGTERM)
+    if await _wait_quietly(proc, _KILL_GRACE):
+        return
+    _signal_group(proc, signal.SIGKILL)
+    await _wait_quietly(proc, _KILL_GRACE)
 
 
 class ToolRunner:
@@ -255,6 +318,13 @@ class ToolRunner:
         argv = [str(arg) for arg in args]
         workdir: Path | None = None
         started = time.monotonic()
+        spawn_kwargs: dict[str, Any] = {}
+        if IS_WINDOWS:
+            # New process group keeps console signals away from the service.
+            spawn_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        else:
+            spawn_kwargs["start_new_session"] = True
         try:
             import tempfile
 
@@ -269,7 +339,7 @@ class ToolRunner:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(workdir),
                 env=env,
-                start_new_session=True,
+                **spawn_kwargs,
             )
         except FileNotFoundError as exc:
             self._cleanup(workdir)
@@ -286,16 +356,14 @@ class ToolRunner:
                 reason=f"could not start tool: {exc}",
             )
 
+        job = _winjob.assign(proc.pid) if IS_WINDOWS else None
         exceeded = {"hit": False}
 
         def on_exceed() -> None:
             if exceeded["hit"]:
                 return
             exceeded["hit"] = True
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
+            _kill_tree_now(proc, job)
 
         out_task = asyncio.create_task(_drain(proc.stdout, self.max_output, on_exceed))
         err_task = asyncio.create_task(_drain(proc.stderr, self.max_output, on_exceed))
@@ -305,10 +373,12 @@ class ToolRunner:
             await asyncio.wait_for(proc.wait(), limit)
         except asyncio.TimeoutError:
             timed_out = True
-            await _terminate(proc)
+            await _terminate(proc, job)
         finally:
             stdout, out_trunc = await out_task
             stderr, err_trunc = await err_task
+            if job is not None:
+                job.close()
 
         files: dict[str, bytes] = {}
         if workdir is not None:
@@ -367,3 +437,14 @@ class ToolRunner:
         )
         self._cleanup(workdir)
         return result
+
+
+__all__ = [
+    "ToolRunner",
+    "ToolResult",
+    "ToolNotAvailable",
+    "ToolTargetError",
+    "validate_target",
+    "DEFAULT_MAX_OUTPUT",
+    "DEFAULT_TIMEOUT",
+]

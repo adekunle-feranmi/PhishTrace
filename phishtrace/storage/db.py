@@ -313,6 +313,124 @@ class KitAnalysis(Base):
         }
 
 
+class Entity(Base):
+    """A durable join key shared by indicators from one or more investigations.
+
+    ``kind`` is ``identity`` (email, phone, handle, wallet, publisher ID),
+    ``infrastructure`` (certificate, nameserver pair, provider desk) or
+    ``case`` (one investigation).  ``key`` is the normalized join key and is
+    globally unique: that uniqueness is what makes resolution work across
+    investigations instead of only inside one.
+    """
+
+    __tablename__ = "entities"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    key: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    label: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    investigation_count: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    members: Mapped[list["EntityMember"]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "key": self.key,
+            "label": self.label,
+            "confidence": self.confidence,
+            "score": self.score,
+            "member_count": self.member_count,
+            "investigation_count": self.investigation_count,
+            "first_seen": self.first_seen,
+            "last_seen": self.last_seen,
+            "meta": self.meta or {},
+        }
+
+
+class EntityMember(Base):
+    """Why one indicator belongs to one entity.  Every claim is traceable."""
+
+    __tablename__ = "entity_members"
+    __table_args__ = (
+        UniqueConstraint("entity_id", "investigation_id", "indicator_id", "role",
+                         name="uq_entity_member"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    entity_id: Mapped[str] = mapped_column(
+        ForeignKey("entities.id", ondelete="CASCADE"), index=True)
+    investigation_id: Mapped[str] = mapped_column(
+        ForeignKey("investigations.id", ondelete="CASCADE"), index=True)
+    indicator_id: Mapped[str | None] = mapped_column(
+        ForeignKey("indicators.id", ondelete="CASCADE"), nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(32), default="contact")
+    join_rule: Mapped[str] = mapped_column(String(48))
+    strength: Mapped[str] = mapped_column(String(16), default="weak")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    evidence_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    entity: Mapped[Entity] = relationship(back_populates="members")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "entity_id": self.entity_id,
+            "investigation_id": self.investigation_id,
+            "indicator_id": self.indicator_id,
+            "role": self.role,
+            "join_rule": self.join_rule,
+            "strength": self.strength,
+            "confidence": self.confidence,
+            "evidence_id": self.evidence_id,
+            "reason": self.reason,
+            "first_seen": self.first_seen,
+            "meta": self.meta or {},
+        }
+
+
+class EntityLink(Base):
+    """An edge between two entities, e.g. identity -> case."""
+
+    __tablename__ = "entity_links"
+    __table_args__ = (
+        UniqueConstraint("src_id", "dst_id", "relation", name="uq_entity_link"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    src_id: Mapped[str] = mapped_column(ForeignKey("entities.id", ondelete="CASCADE"), index=True)
+    dst_id: Mapped[str] = mapped_column(ForeignKey("entities.id", ondelete="CASCADE"), index=True)
+    relation: Mapped[str] = mapped_column(String(64))
+    strength: Mapped[str] = mapped_column(String(16), default="weak")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    shared: Mapped[list] = mapped_column(JSON, default=list)
+    investigations: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "src": self.src_id,
+            "dst": self.dst_id,
+            "relation": self.relation,
+            "strength": self.strength,
+            "confidence": self.confidence,
+            "shared": self.shared or [],
+            "investigations": self.investigations or [],
+        }
+
+
 class User(Base):
     __tablename__ = "users"
 

@@ -13,13 +13,13 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from phishtrace.models import STRENGTH_RANK, as_utc, iso, stable_key, utcnow
 from phishtrace.storage.db import (
-    AuditLog, Edge, Evidence, Indicator, Investigation, KitAnalysis, ProviderRun, Sighting,
-    TimelineEvent, User,
+    AuditLog, Edge, Entity, EntityLink, EntityMember, Evidence, Indicator, Investigation,
+    KitAnalysis, ProviderRun, Sighting, TimelineEvent, User,
 )
 from phishtrace.storage.evidence import EvidenceRecord, EvidenceStore
 from phishtrace.utils import to_jsonable
@@ -574,6 +574,286 @@ class Repository:
             "kits": self.list_kits(investigation_id),
             "counts": self.counts(investigation_id),
         }
+
+    # ----------------------------------------------------------------- entities
+    def upsert_entity(
+        self,
+        *,
+        kind: str,
+        key: str,
+        label: str,
+        confidence: float = 0.0,
+        meta: dict | None = None,
+    ) -> tuple[dict, bool]:
+        """Return the entity for ``key``, creating it on first sight.
+
+        ``key`` is globally unique, which is the whole point: an email seen in
+        one investigation is the same row when it turns up in the next one.
+        """
+        with self._write_lock, self.session() as db:
+            row = db.scalars(select(Entity).where(Entity.key == key)).first()
+            if row:
+                if label and label != row.label:
+                    row.label = label
+                row.confidence = max(row.confidence, float(confidence))
+                row.meta = {**(row.meta or {}), **to_jsonable(meta or {})}
+                db.flush()
+                return row.to_dict(), False
+            obj = Entity(
+                id=uuid.uuid4().hex,
+                kind=kind,
+                key=key,
+                label=label,
+                confidence=float(confidence),
+                meta=to_jsonable(meta or {}),
+            )
+            db.add(obj)
+            db.flush()
+            return obj.to_dict(), True
+
+    def add_entity_member(
+        self,
+        entity_id: str,
+        investigation_id: str,
+        *,
+        indicator_id: str | None,
+        role: str,
+        join_rule: str,
+        strength: str = "weak",
+        confidence: float = 0.0,
+        evidence_id: str | None = None,
+        reason: str = "",
+        meta: dict | None = None,
+    ) -> tuple[dict, bool]:
+        with self._write_lock, self.session() as db:
+            row = db.scalars(
+                select(EntityMember).where(
+                    EntityMember.entity_id == entity_id,
+                    EntityMember.investigation_id == investigation_id,
+                    EntityMember.indicator_id == indicator_id,
+                    EntityMember.role == role,
+                )
+            ).first()
+            if row:
+                row.confidence = max(row.confidence, float(confidence))
+                if STRENGTH_RANK.get(strength, 0) > STRENGTH_RANK.get(row.strength, 0):
+                    row.strength = strength
+                if evidence_id and not row.evidence_id:
+                    row.evidence_id = evidence_id
+                if reason:
+                    row.reason = reason
+                row.meta = {**(row.meta or {}), **to_jsonable(meta or {})}
+                db.flush()
+                return row.to_dict(), False
+            obj = EntityMember(
+                id=uuid.uuid4().hex,
+                entity_id=entity_id,
+                investigation_id=investigation_id,
+                indicator_id=indicator_id,
+                role=role,
+                join_rule=join_rule,
+                strength=strength,
+                confidence=float(confidence),
+                evidence_id=evidence_id,
+                reason=reason,
+                meta=to_jsonable(meta or {}),
+            )
+            db.add(obj)
+            db.flush()
+            return obj.to_dict(), True
+
+    def refresh_entity(self, entity_id: str) -> dict:
+        """Recompute member/investigation counts and the observed window."""
+        with self._write_lock, self.session() as db:
+            row = db.get(Entity, entity_id)
+            if not row:
+                return {}
+            total = db.scalar(
+                select(func.count()).select_from(EntityMember).where(EntityMember.entity_id == entity_id)
+            ) or 0
+            cases = db.scalar(
+                select(func.count(func.distinct(EntityMember.investigation_id))).where(
+                    EntityMember.entity_id == entity_id
+                )
+            ) or 0
+            first = db.scalar(
+                select(func.min(EntityMember.first_seen)).where(EntityMember.entity_id == entity_id)
+            )
+            last = db.scalar(
+                select(func.max(EntityMember.first_seen)).where(EntityMember.entity_id == entity_id)
+            )
+            row.member_count = int(total)
+            row.investigation_count = int(cases)
+            if first:
+                row.first_seen = as_utc(first)
+            if last:
+                row.last_seen = as_utc(last)
+            db.flush()
+            return row.to_dict()
+
+    def set_entity_score(self, entity_id: str, score: float) -> None:
+        with self._write_lock, self.session() as db:
+            row = db.get(Entity, entity_id)
+            if row:
+                row.score = float(score)
+                db.flush()
+
+    def link_entities(
+        self,
+        src_id: str,
+        dst_id: str,
+        relation: str,
+        *,
+        strength: str = "weak",
+        confidence: float = 0.0,
+        shared: list | None = None,
+        investigations: list | None = None,
+    ) -> tuple[dict, bool]:
+        if src_id == dst_id:
+            return {}, False
+        with self._write_lock, self.session() as db:
+            row = db.scalars(
+                select(EntityLink).where(
+                    EntityLink.src_id == src_id,
+                    EntityLink.dst_id == dst_id,
+                    EntityLink.relation == relation,
+                )
+            ).first()
+            if row:
+                row.confidence = max(row.confidence, float(confidence))
+                if STRENGTH_RANK.get(strength, 0) > STRENGTH_RANK.get(row.strength, 0):
+                    row.strength = strength
+                merged = list(dict.fromkeys(list(row.shared or []) + list(shared or [])))
+                row.shared = merged[:50]
+                seen = list(dict.fromkeys(list(row.investigations or []) + list(investigations or [])))
+                row.investigations = seen[:50]
+                db.flush()
+                return row.to_dict(), False
+            obj = EntityLink(
+                id=uuid.uuid4().hex,
+                src_id=src_id,
+                dst_id=dst_id,
+                relation=relation,
+                strength=strength,
+                confidence=float(confidence),
+                shared=list(shared or [])[:50],
+                investigations=list(investigations or [])[:50],
+            )
+            db.add(obj)
+            db.flush()
+            return obj.to_dict(), True
+
+    def get_entity(self, entity_id: str) -> dict | None:
+        with self.session() as db:
+            row = db.get(Entity, entity_id)
+            if not row:
+                return None
+            data = row.to_dict()
+            data["members"] = [
+                m.to_dict()
+                for m in db.scalars(
+                    select(EntityMember)
+                    .where(EntityMember.entity_id == entity_id)
+                    .order_by(EntityMember.first_seen.asc())
+                ).all()
+            ]
+            data["links"] = [
+                link.to_dict()
+                for link in db.scalars(
+                    select(EntityLink).where(
+                        or_(EntityLink.src_id == entity_id, EntityLink.dst_id == entity_id)
+                    )
+                ).all()
+            ]
+            return data
+
+    def get_entity_by_key(self, key: str) -> dict | None:
+        with self.session() as db:
+            row = db.scalars(select(Entity).where(Entity.key == key)).first()
+            return row.to_dict() if row else None
+
+    def list_entities(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 100,
+        min_investigations: int = 0,
+    ) -> list[dict]:
+        with self.session() as db:
+            stmt = select(Entity)
+            if kind:
+                stmt = stmt.where(Entity.kind == kind)
+            if min_investigations > 0:
+                stmt = stmt.where(Entity.investigation_count >= min_investigations)
+            stmt = stmt.order_by(
+                Entity.investigation_count.desc(), Entity.score.desc(), Entity.last_seen.desc()
+            ).limit(max(1, limit))
+            return [row.to_dict() for row in db.scalars(stmt).all()]
+
+    def entity_members(self, entity_id: str) -> list[dict]:
+        with self.session() as db:
+            return [
+                m.to_dict()
+                for m in db.scalars(
+                    select(EntityMember).where(EntityMember.entity_id == entity_id)
+                ).all()
+            ]
+
+    def entities_for_investigation(self, investigation_id: str) -> list[dict]:
+        """Entities touched by one investigation, with their member roles."""
+        with self.session() as db:
+            pairs = db.execute(
+                select(Entity, EntityMember)
+                .join(EntityMember, EntityMember.entity_id == Entity.id)
+                .where(EntityMember.investigation_id == investigation_id)
+                .order_by(Entity.kind.asc(), Entity.score.desc())
+            ).all()
+            merged: dict[str, dict] = {}
+            for entity, member in pairs:
+                item = merged.get(entity.id)
+                if item is None:
+                    item = entity.to_dict()
+                    item["roles"] = []
+                    item["member_ids"] = []
+                    item["evidence_ids"] = []
+                    merged[entity.id] = item
+                if member.role not in item["roles"]:
+                    item["roles"].append(member.role)
+                if member.id not in item["member_ids"]:
+                    item["member_ids"].append(member.id)
+                if member.evidence_id and member.evidence_id not in item["evidence_ids"]:
+                    item["evidence_ids"].append(member.evidence_id)
+            return list(merged.values())
+
+    def entity_cases(self, entity_id: str) -> list[dict]:
+        """Investigations in which this entity has a membership row."""
+        with self.session() as db:
+            rows = db.scalars(
+                select(Investigation)
+                .join(EntityMember, EntityMember.investigation_id == Investigation.id)
+                .where(EntityMember.entity_id == entity_id)
+                .distinct()
+                .order_by(Investigation.started_at.desc())
+            ).all()
+            return [
+                {
+                    "id": row.id,
+                    "seed": row.seed,
+                    "seed_type": row.seed_type,
+                    "seed_normalized": row.seed_normalized,
+                    "status": row.status,
+                    "owner": row.owner,
+                    "started_at": iso(row.started_at),
+                }
+                for row in rows
+            ]
+
+    def delete_entities(self) -> int:
+        """Drop the resolved layer (used by tests and re-resolution)."""
+        with self._write_lock, self.session() as db:
+            removed = db.execute(delete(Entity)).rowcount or 0
+            db.flush()
+            return int(removed)
 
     # -------------------------------------------------------------------- users
     def create_user(self, username: str, password_hash: str, is_admin: bool = True) -> dict:

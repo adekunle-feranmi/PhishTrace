@@ -399,6 +399,123 @@ def cmd_version(args) -> int:
     return 0
 
 
+def cmd_intake(args) -> int:
+    from phishtrace.core.intake import plan_intake
+
+    plan = plan_intake(args.seed, kind=args.kind)
+    if args.json:
+        print(json.dumps(plan.as_dict(), indent=2))
+        return 0 if plan.seed_type else 2
+    if not plan.seed_type:
+        print("error: seed could not be normalized", file=sys.stderr)
+        return 2
+    print(f"Seed       : {plan.raw}")
+    print(f"Normalized : {plan.normalized} ({plan.seed_type})")
+    print(f"Selectors  : {len(plan.derived)}")
+    for item in plan.derived:
+        print(f"  {item.priority} {item.type:<13} {item.relation:20} {item.value}")
+        print(f"      why: {item.reason}")
+    for note in plan.notes:
+        print(f"  note: {note}")
+    if not plan.derived:
+        print("No deterministic selectors were found inside this seed.")
+    return 0
+
+
+def cmd_entities(args) -> int:
+    config = load_config(args.config, validate=False)
+    repo = _bootstrap(config)
+    rows = repo.list_entities(kind=args.kind, limit=args.limit,
+                              min_investigations=args.min_investigations)
+    if args.json:
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
+    if not rows:
+        print("No entities resolved yet. Run `phishtrace run <seed>` first.")
+        return 0
+    print(f"{'ID':34} {'KIND':14} {'CASES':>5} {'MEMB':>5} {'SCORE':>5}  LABEL")
+    for row in rows:
+        print(f"{row['id']:34} {row['kind']:14} {row['investigation_count']:>5} "
+              f"{row['member_count']:>5} {row['score']:>5.0f}  {row['label']}")
+    print()
+    print("Entities link indicators across investigations. `phishtrace entity <id>` "
+          "shows the members and the rule that produced each one.")
+    return 0
+
+
+def cmd_entity(args) -> int:
+    config = load_config(args.config, validate=False)
+    repo = _bootstrap(config)
+    entity = repo.get_entity(args.entity_id) or repo.get_entity_by_key(args.entity_id)
+    if not entity:
+        print(f"error: no entity {args.entity_id}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(entity, indent=2, default=str))
+        return 0
+    print(f"Entity      : {entity['label']}")
+    print(f"ID / kind   : {entity['id']} / {entity['kind']}")
+    print(f"Key         : {entity['key']}")
+    print(f"Cases       : {entity['investigation_count']}   members: {entity['member_count']}"
+          f"   score: {entity['score']:.0f}   confidence: {entity['confidence']:.2f}")
+    print(f"First/last  : {entity['first_seen']} -> {entity['last_seen']}")
+    print()
+    print("Members (rule that produced them):")
+    for member in entity["members"]:
+        print(f"  - [{member['investigation_id'][:12]}] {member['role']:20} "
+              f"{member['strength']:6} {member['join_rule']:20} {member['reason']}")
+    if entity.get("links"):
+        print()
+        print("Links:")
+        for link in entity["links"]:
+            other = link["dst"] if link["src"] == entity["id"] else link["src"]
+            print(f"  - {link['relation']:20} {other[:16]}  {link['strength']} "
+                  f"({len(link.get('investigations') or [])} case(s))")
+    return 0
+
+
+def cmd_suspects(args) -> int:
+    config = load_config(args.config, validate=False)
+    repo = _bootstrap(config)
+    ids = list(args.investigation_ids or [])
+    if args.latest and not ids:
+        rows = repo.list_investigations(limit=1)
+        if not rows:
+            print("error: no investigations yet", file=sys.stderr)
+            return 2
+        ids = [rows[0]["id"]]
+    if not ids:
+        print("error: pass one or more investigation ids, or --latest", file=sys.stderr)
+        return 2
+    from phishtrace.core.entities import rank_suspects
+
+    report = rank_suspects(repo, ids, limit=args.limit)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+        return 0
+    if not report["suspects"]:
+        print("No identity candidates were resolved for this case.")
+        print("That is a result: no registrant contact, phone, handle, wallet or "
+              "publisher ID was attributable to the infrastructure.")
+        return 0
+    print(f"Case(s)   : {', '.join(ids)}")
+    print(f"Candidates: {report['candidate_count']} (showing {len(report['suspects'])})")
+    print()
+    for item in report["suspects"]:
+        print(f"[{item['band'].upper():6} {item['score']:>3}] {item['label']}"
+              f"  ({item['kind']}, {item['investigation_count']} case(s), roles: {', '.join(item['roles'])})")
+        for reason in item["why"]:
+            print(f"    + {reason}")
+        if item["linked_infrastructure"]:
+            shown = ", ".join(str(v["display"]) for v in item["linked_infrastructure"][:6])
+            print(f"    infra: {shown}")
+        for caveat in item["caveats"][:2]:
+            print(f"    ! {caveat}")
+        print()
+    print(report["wording"] + ".")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="phishtrace", description="Phishing infrastructure & persona investigations")
     parser.add_argument("--config", default=None, help="path to config.yaml")
@@ -465,6 +582,32 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("purge", help="delete investigations older than the retention period")
     p.add_argument("--days", type=int)
     p.set_defaults(func=cmd_purge)
+
+    p = sub.add_parser("intake", help="plan the selectors contained in one seed")
+    p.add_argument("seed", help="URL, domain, email or other seed")
+    p.add_argument("--type", dest="kind", default=None, help="force the seed selector type")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_intake)
+
+    p = sub.add_parser("entities", help="list cross-investigation entities")
+    p.add_argument("--kind", choices=("identity", "infrastructure", "case"))
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--min-investigations", type=int, default=0,
+                   help="only entities seen in at least N cases")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_entities)
+
+    p = sub.add_parser("entity", help="show one entity, its members and links")
+    p.add_argument("entity_id", help="entity id or join key")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_entity)
+
+    p = sub.add_parser("suspects", help="rank identity candidates for a case")
+    p.add_argument("investigation_ids", nargs="*", help="investigation id(s)")
+    p.add_argument("--latest", action="store_true", help="use the most recent investigation")
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_suspects)
 
     p = sub.add_parser("version", help="print version")
     p.set_defaults(func=cmd_version)

@@ -135,14 +135,14 @@ providers:
   # ---- Phase C: wrapped CLI tools -----------------------------------------
   # `path` is optional: without it the binary must be on PATH.  `timeout` is
   # enforced by the runner together with a hard stdout/stderr byte cap.
-  dnstwist:      { enabled: true, timeout: 300, options: { path: "", max_output: 4000000 } }
-  theharvester:  { enabled: true, timeout: 300, options: { path: "", sources: "bing", limit: 200 } }
+  dnstwist:      { enabled: true, timeout: 300, options: { path: "C:/Users/Administrator/PhishTrace/.tools/dnstwist/Scripts/dnstwist.exe", max_output: 4000000 } }
+  theharvester:  { enabled: true, timeout: 300, options: { path: "C:/Users/Administrator/PhishTrace/.tools/osint/Scripts/theHarvester.exe", sources: "crtsh,hackertarget", limit: 200 } }
   spiderfoot:    { enabled: true, timeout: 600, options: { path: "", mode: cli, modules: "sfp_dnsresolve,sfp_crt,sfp_whois" } }
-  sherlock:      { enabled: true, timeout: 300, options: { path: "" } }
-  maigret:       { enabled: true, timeout: 300, options: { path: "" } }
-  phoneinfoga:   { enabled: true, timeout: 120, options: { path: "" } }
+  sherlock:      { enabled: true, timeout: 300, options: { path: "C:/Users/Administrator/PhishTrace/.tools/osint/Scripts/sherlock.exe" } }
+  maigret:       { enabled: true, timeout: 300, options: { path: "C:/Users/Administrator/PhishTrace/.tools/osint/Scripts/maigret.exe" } }
+  phoneinfoga:   { enabled: true, timeout: 120, options: { path: "C:/Users/Administrator/PhishTrace/.tools/bin/phoneinfoga.exe" } }
   # Active account probes: stay off until an operator records scope sign-off.
-  holehe:        { enabled: false, options: { path: "", legal_acknowledged: false } }
+  holehe:        { enabled: false, options: { path: "C:/Users/Administrator/PhishTrace/.tools/osint/Scripts/holehe.exe", legal_acknowledged: false } }
   ghunt:         { enabled: false, options: { path: "", cookies: "", legal_acknowledged: false } }
 
   # ---- Planned, not implemented -------------------------------------------

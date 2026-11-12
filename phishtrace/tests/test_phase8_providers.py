@@ -1,16 +1,19 @@
 """Keyed providers and wrapped CLI tools.
 
 Every test here is offline: HTTP goes through ``httpx.MockTransport`` and the
-CLI wrappers run against tiny ``/bin/sh`` stubs written into ``tmp_path``.  The
+CLI wrappers run against tiny stubs written into ``tmp_path``: a ``sh`` shim on
+POSIX, a ``.cmd`` shim on Windows, both invoking the running interpreter.  The
 suite therefore never contacts a vendor API and never needs an OSINT tool to be
-installed, while still exercising the real argv building, parsing and evidence
-recording paths.
+installed, while still exercising the real argv building, process control,
+parsing and evidence recording paths on either platform.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -42,12 +45,55 @@ SHA_B = "b" * 64
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def stub(tmp_path: Path, name: str, body: str) -> Path:
-    """Write an executable ``/bin/sh`` stub and return its path."""
+def stub(tmp_path: Path, name: str, body: str, *, data: str | None = None) -> Path:
+    """Write an executable stub that runs ``body`` (Python source).
+
+    A bare script is not executable on Windows, and ``/bin/sh`` may not exist
+    there at all, so every stub is a two-line shim around the interpreter that
+    is already running the tests: ``sh`` + ``exec`` on POSIX, ``.cmd`` on
+    Windows.  ``data`` is materialised as ``<name>.dat`` beside the script so
+    JSON and CSV payloads never have to survive shell quoting.
+    """
+    script = tmp_path / f"{name}_stub.py"
+    script.write_text(body, encoding="utf-8")
+    if data is not None:
+        (tmp_path / f"{name}.dat").write_text(data, encoding="utf-8")
+    if os.name == "nt":
+        path = tmp_path / f"{name}.cmd"
+        path.write_text(
+            f'@echo off\r\n"{sys.executable}" "%~dp0{script.name}" %*\r\n',
+            encoding="utf-8", newline="",
+        )
+        return path
     path = tmp_path / name
-    path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    path.write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" "$(dirname "$0")/{script.name}" "$@"\n',
+        encoding="utf-8",
+    )
     path.chmod(0o755)
     return path
+
+
+_DAT_BODY = (
+    "import pathlib, sys\n"
+    "sys.stdout.write(pathlib.Path(__file__).with_name({dat!r}).read_text(encoding='utf-8'))\n"
+    "sys.stdout.flush()\n"
+)
+
+
+def payload_tool(tmp_path: Path, name: str, text: str, *, body: str | None = None) -> Path:
+    """Stub that echoes ``text`` to stdout, optionally through a custom body."""
+    return stub(tmp_path, name, body or _DAT_BODY.format(dat=f"{name}.dat"), data=text)
+
+
+def file_tool(tmp_path: Path, name: str, filename: str, text: str) -> Path:
+    """Stub that writes ``text`` to ``filename`` inside its working directory."""
+    body = (
+        "import pathlib\n"
+        "pathlib.Path({target!r}).write_text("
+        "pathlib.Path(__file__).with_name({dat!r}).read_text(encoding='utf-8'), encoding='utf-8')\n"
+    ).format(target=filename, dat=f"{name}.dat")
+    return stub(tmp_path, name, body, data=text)
 
 
 def note_text(run) -> str:
@@ -551,25 +597,24 @@ def test_missing_binary_is_reported_not_crashed(tmp_path):
 # ToolRunner
 # --------------------------------------------------------------------------- #
 async def test_runner_executes_json_tool_and_parses_stdout(tmp_path):
-    path = stub(tmp_path, "json-tool", "printf '%s\\n' '{\"ok\": true, \"n\": 3}'\n")
+    path = payload_tool(tmp_path, "json-tool", json.dumps({"ok": True, "n": 3}))
     result = await ToolRunner("json-tool", path=str(path)).run([])
     assert result.ok is True
     assert result.exit_code == 0
     assert result.json_stdout() == {"ok": True, "n": 3}
-    assert result.command[0] == "json-tool"
+    assert Path(result.command[0]).stem == "json-tool"
 
 
 async def test_runner_collects_named_and_json_reports(tmp_path):
-    body = (
-        "cat > harvest.json <<'EOF'\n"
-        '{"emails": ["a@evil-login.example"]}\n'
-        "EOF\n"
-        "cat > report_user.json <<'EOF'\n"
-        '{"GitHub": {"status": {"status": "Claimed"}}}\n'
-        "EOF\n"
-        "echo ignored > notes.txt\n"
+    path = stub(
+        tmp_path, "writer",
+        "import json, pathlib\n"
+        "pathlib.Path('harvest.json').write_text("
+        "json.dumps({'emails': ['a@evil-login.example']}), encoding='utf-8')\n"
+        "pathlib.Path('report_user.json').write_text("
+        "json.dumps({'GitHub': {'status': {'status': 'Claimed'}}}), encoding='utf-8')\n"
+        "pathlib.Path('notes.txt').write_text('ignored', encoding='utf-8')\n",
     )
-    path = stub(tmp_path, "writer", body)
     result = await ToolRunner("writer", path=str(path)).run(
         [], collect=("harvest.json",), collect_json=True)
     assert result.ok is True
@@ -580,7 +625,7 @@ async def test_runner_collects_named_and_json_reports(tmp_path):
 
 
 async def test_runner_times_out_and_kills_process_group(tmp_path):
-    path = stub(tmp_path, "sleeper", "sleep 30\n")
+    path = stub(tmp_path, "sleeper", "import time\ntime.sleep(30)\n")
     result = await ToolRunner("sleeper", path=str(path)).run([], timeout=1)
     assert result.ok is False
     assert result.timed_out is True
@@ -589,7 +634,7 @@ async def test_runner_times_out_and_kills_process_group(tmp_path):
 
 
 async def test_runner_caps_output(tmp_path):
-    path = stub(tmp_path, "flood", "head -c 200000 /dev/zero | tr '\\0' 'A'\n")
+    path = stub(tmp_path, "flood", "import sys\nsys.stdout.write('A' * 200000)\nsys.stdout.flush()\n")
     result = await ToolRunner("flood", path=str(path), max_output=4096).run([])
     assert result.truncated is True
     assert len(result.stdout.encode()) <= 4096
@@ -599,7 +644,12 @@ async def test_runner_caps_output(tmp_path):
 async def test_runner_sanitizes_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("PHISHTRACE_TEST_SECRET", "leak-me")
     monkeypatch.setenv("HTTPS_PROXY", "http://attacker.example:8080")
-    path = stub(tmp_path, "envdump", "env > env.txt\n")
+    path = stub(
+        tmp_path, "envdump",
+        "import os, pathlib\n"
+        "dump = ''.join(f'{k}={v}\\n' for k, v in sorted(os.environ.items()))\n"
+        "pathlib.Path('env.txt').write_text(dump, encoding='utf-8')\n",
+    )
     result = await ToolRunner("envdump", path=str(path)).run([], collect=("env.txt",))
     env_text = result.files["env.txt"].decode()
     assert "leak-me" not in env_text
@@ -610,7 +660,10 @@ async def test_runner_sanitizes_environment(tmp_path, monkeypatch):
 
 
 async def test_runner_reports_exit_code_and_stderr_tail(tmp_path):
-    path = stub(tmp_path, "failer", "echo 'auth failed badly' >&2\nexit 3\n")
+    path = stub(
+        tmp_path, "failer",
+        "import sys\nsys.stderr.write('auth failed badly\\n')\nsys.exit(3)\n",
+    )
     result = await ToolRunner("failer", path=str(path)).run([])
     assert result.ok is False
     assert result.exit_code == 3
@@ -642,10 +695,15 @@ async def test_dnstwist_emits_registered_lookalikes_only(tmp_path):
         {"domain": "evil-login.example", "fuzzer": "addition", "dns_a": ["203.0.113.81"]},
         {"domain": "evil-login.net", "fuzzer": "tld-swap", "dns_a": []},
     ]
-    script = stub(
-        tmp_path, "dnstwist",
-        "[ \"$1\" = \"--format\" ] && [ \"$2\" = \"json\" ] || exit 9\n"
-        f"cat <<'EOF'\n{json.dumps(payload)}\nEOF\n",
+    script = payload_tool(
+        tmp_path, "dnstwist", json.dumps(payload),
+        body=(
+            "import pathlib, sys\n"
+            "if sys.argv[1:3] != ['--format', 'json']:\n"
+            "    sys.exit(9)\n"
+            "sys.stdout.write("
+            "pathlib.Path(__file__).with_name('dnstwist.dat').read_text(encoding='utf-8'))\n"
+        ),
     )
     run = await run_provider(
         tmp_path, DnstwistProvider, SEED_DOMAIN, route({}),
@@ -676,10 +734,7 @@ async def test_sherlock_maps_claimed_profiles(tmp_path):
         "Empty": {"url_user": "https://empty.example/eviluser",
                   "status": {"status": "Available"}},
     }
-    script = stub(
-        tmp_path, "sherlock",
-        f"cat <<'EOF'\n{json.dumps(payload)}\nEOF\n",
-    )
+    script = payload_tool(tmp_path, "sherlock", json.dumps(payload))
     run = await run_provider(
         tmp_path, SherlockProvider, "eviluser", route({}),
         options={"path": str(script)}, seed_type="username",
@@ -700,7 +755,7 @@ async def test_maigret_reads_ndjson(tmp_path):
          "status": {"status": "Available"}},
     ]
     body = "".join(json.dumps(row) + "\n" for row in rows)
-    script = stub(tmp_path, "maigret", f"cat <<'EOF'\n{body}EOF\n")
+    script = payload_tool(tmp_path, "maigret", body)
     run = await run_provider(
         tmp_path, MaigretProvider, "eviluser", route({}),
         options={"path": str(script)}, seed_type="username",
@@ -709,9 +764,9 @@ async def test_maigret_reads_ndjson(tmp_path):
 
 
 async def test_holehe_lists_registered_services(tmp_path):
-    script = stub(
+    script = payload_tool(
         tmp_path, "holehe",
-        "printf '%s\\n' '[+] github.com' '[+] twitter.com' '[-] instagram.com'\n",
+        "[+] github.com\n[+] twitter.com\n[-] instagram.com\n",
     )
     run = await run_provider(
         tmp_path, HoleheProvider, "analyst@evil-login.example", route({}),
@@ -732,10 +787,7 @@ async def test_theharvester_filters_out_of_scope_results(tmp_path):
         "ips": ["203.0.113.90"],
         "urls": [f"https://{SEED_DOMAIN}/owa/"],
     }
-    script = stub(
-        tmp_path, "theharvester",
-        f"cat > harvest.json <<'EOF'\n{json.dumps(payload)}\nEOF\n",
-    )
+    script = file_tool(tmp_path, "theharvester", "harvest.json", json.dumps(payload))
     run = await run_provider(
         tmp_path, TheHarvesterProvider, SEED_DOMAIN, route({}),
         options={"path": str(script)},
@@ -755,7 +807,7 @@ async def test_spiderfoot_maps_csv_findings(tmp_path):
         '"Bitcoin Address","1BoatSLRHtKNngkdXEeobR76b53LETtpyT","sfp_btc"\n'
         '"Something Else","ignored","sfp_x"\n'
     )
-    script = stub(tmp_path, "spiderfoot", f"cat <<'EOF'\n{csv_body}EOF\n")
+    script = payload_tool(tmp_path, "spiderfoot", csv_body)
     run = await run_provider(
         tmp_path, SpiderfootProvider, SEED_DOMAIN, route({}),
         options={"path": str(script)},
@@ -769,9 +821,9 @@ async def test_spiderfoot_maps_csv_findings(tmp_path):
 
 
 async def test_phoneinfoga_extracts_carrier_metadata(tmp_path):
-    script = stub(
+    script = payload_tool(
         tmp_path, "phoneinfoga",
-        "printf '%s\\n' 'Carrier: Example Telecom' 'Country: US' 'Line type: mobile'\n",
+        "Carrier: Example Telecom\nCountry: US\nLine type: mobile\n",
     )
     run = await run_provider(
         tmp_path, PhoneInfogaProvider, "+15550100", route({}),
@@ -787,10 +839,7 @@ async def test_phoneinfoga_extracts_carrier_metadata(tmp_path):
 
 async def test_ghunt_keeps_existence_but_drops_profile_fields(tmp_path):
     payload = {"services": {"youtube": {}, "photos": {}}, "profile": {"name": "Alice Example"}}
-    script = stub(
-        tmp_path, "ghunt",
-        f"cat > ghunt.json <<'EOF'\n{json.dumps(payload)}\nEOF\n",
-    )
+    script = file_tool(tmp_path, "ghunt", "ghunt.json", json.dumps(payload))
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
     run = await run_provider(
