@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhishTrace Console</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">PT</span> PhishTrace <span class="tag">v{{ app_version }}</span></div>
+    <div class="top-actions">
+      <span id="who" class="muted"></span>
+      <button id="logout" class="ghost" type="button">Sign out</button>
+    </div>
+  </header>
+  <main id="app" class="shell">
+    <section class="panel">
+      <h2>Investigation console</h2>
+      <p class="muted">The console is loading. If this message persists, check that <code>/static/app.js</code> is present.</p>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

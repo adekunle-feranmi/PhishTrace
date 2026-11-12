@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phishtrace"
+version = "1.0.0"
+description = "PhishTrace - one-click phishing infrastructure and persona investigation platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PhishTrace" }]
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "httpx>=0.27",
+  "SQLAlchemy>=2.0",
+  "pydantic>=2.6",
+  "Jinja2>=3.1",
+  "PyYAML>=6.0",
+  "publicsuffix2>=2.20191221",
+  "phonenumbers>=8.13",
+  "argon2-cffi>=23.1",
+  "itsdangerous>=2.1",
+  "python-multipart>=0.0.9",
+  "networkx>=3.2",
+  "dnspython>=2.6",
+  "mmh3>=4.1",
+  "reportlab>=4.0",
+  "python-dateutil>=2.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "respx>=0.21"]
+fuzzy = ["ssdeep>=3.4", "tlsh>=1.0"]
+telegram = ["telethon>=1.34"]
+crypto = ["cryptography>=42"]
+
+[project.scripts]
+phishtrace = "phishtrace.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["phishtrace*"]
+
+[tool.setuptools.package-data]
+phishtrace = [
+  "reports/templates/*.j2",
+  "ui/static/*",
+  "tests/fixtures/*",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["phishtrace/tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

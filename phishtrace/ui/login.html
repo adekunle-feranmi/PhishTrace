@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · PhishTrace</title>
+  <style>
+    :root { color-scheme: dark; --bg:#070b12; --panel:#0e1622; --line:#1d2a3a; --text:#e6edf7; --muted:#8aa0b8; --accent:#3ddc97; --danger:#ff7b72; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:radial-gradient(1200px 600px at 15% -10%, #12304a 0, transparent 60%), radial-gradient(800px 400px at 110% 110%, #1a2f4a 0, transparent 55%), var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .card { width:min(420px, 92vw); background: color-mix(in srgb, var(--panel) 92%, transparent); border:1px solid var(--border, #223247); border-radius:16px; padding:32px; box-shadow: 0 24px 60px rgba(0,0,0,.45); }
+    .brand { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+    .mark { width:34px; height:34px; border-radius:10px; background: linear-gradient(135deg, #34d399, #0ea5e9); display:grid; place-items:center; font-weight:800; color:#04121a; }
+    h1 { font-size:20px; margin:0; letter-spacing:.2px; }
+    p.sub { color:var(--muted); font-size:13px; margin:4px 0 24px; }
+    label { display:block; font-size:12px; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); margin:14px 0 6px; }
+    input { width:100%; padding:11px 12px; border-radius:9px; border:1px solid #24344a; background:#0a121c; color:var(--text); font-size:14px; outline:none; }
+    input:focus { border-color:#38bdf8; box-shadow:0 0 0 3px rgba(56,189,248,.15); }
+  .btn { width:100%; margin-top:20px; padding:11px 16px; border:0; border-radius:9px; background:linear-gradient(135deg,#10b981,#0ea5e9); color:#04121a; font-weight:700; font-size:14px; cursor:pointer; }
+    .error { background:rgba(255,123,114,.1); border:1px solid rgba(255,123,114,.35); color:var(--danger); padding:10px 12px; border-radius:9px; font-size:13px; margin-bottom:8px; }
+    .note { margin-top:18px; font-size:12px; color:var(--muted); line-height:1.5; }
+    code { background:#0a121c; padding:2px 6px; border-radius:5px; border:1px solid #1d2a3a; }
+    .foot { margin-top:22px; display:flex; justify-content:space-between; font-size:11px; color:#5c7089; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">
+      <div class="mark">PT</div>
+      <h1>PhishTrace</h1>
+    </div>
+    <p class="sub">Defensive phishing infrastructure &amp; persona investigation</p>
+    {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+    {% if auth_enabled %}
+    <form method="post" action="/login" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" required maxlength="64" autofocus>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required minlength="12">
+      <button class="btn" type="submit">Sign in</button>
+    </form>
+    <p class="note">No default accounts exist. Create the first administrator on the host:<br><code>phishtrace create-admin</code></p>
+    {% else %}
+    <p class="note">Authentication is disabled (loopback-only mode). <a href="/" style="color:#38bdf8">Continue to the console</a>.</p>
+    {% endif %}
+    <div class="foot"><span>PhishTrace v{{ app_version }}</span><span>authorized use only</span></div>
+  </main>
+</body>
+</html>
