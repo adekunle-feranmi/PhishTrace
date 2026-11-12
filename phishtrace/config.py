@@ -155,6 +155,7 @@ class Config(BaseModel):
     fetcher: FetcherConfig = Field(default_factory=FetcherConfig)
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     stoplists: dict[str, str] = Field(default_factory=dict)
+    default_region: str = "US"  # ISO-3166 alpha-2 fallback for phone numbers without a country code
     retention_days: int = 180
     reports: ReportConfig = Field(default_factory=ReportConfig)
     watchlist_interval_minutes: int = 0
@@ -195,6 +196,7 @@ class Config(BaseModel):
             "OTX_API_KEY", "HYBRID_ANALYSIS_API_KEY", "MDTI_TOKEN", "X_BEARER_TOKEN",
             "YOUTUBE_API_KEY", "TELEGRAM_API_ID", "SERPAPI_KEY", "BRAVE_API_KEY",
             "INTELX_API_KEY", "DEHASHED_API_KEY", "PHISHTANK_API_KEY", "REDDIT_CLIENT_ID",
+            "ABUSECH_AUTH_KEY", "MASTODON_TOKEN",
         }
         return {name: self.has_key(name) for name in sorted(names)}
 

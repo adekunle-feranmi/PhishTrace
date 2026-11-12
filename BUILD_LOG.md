@@ -12,7 +12,7 @@ sandbox, Node not required, no outbound network needed for the test suite.
 |---|---|---|
 | 1 | Skeleton, config, models, storage, auth, HTTP layer, registry, health API, CLI | done |
 | 2 | Normalizer + keyless providers + mocked-transport tests | done |
-| 3 | Pivot engine, stop-lists, scoring, caps, orchestrator | in progress |
+| 3 | Pivot engine, stop-lists, scoring, caps, orchestrator | done |
 | 4 | Timeline merger, sightings, role classifier, archiver | pending |
 | 5 | Isolated fetcher + kit analyzer + mock kit | pending |
 | 6 | Web UI (live progress, graph, timeline, evidence browser) | pending |
@@ -115,6 +115,75 @@ Issues found and fixed:
   classes are skipped by convention now.
 
 Verification: `82 passed` (phase 1 + 2).
+
+## Phase 3 — pivot engine, stop-lists, scoring, orchestrator
+
+Added:
+
+* `phishtrace/core/stoplist.py` — CIDR and domain stop-lists for shared
+  infrastructure that must never be pivoted: Cloudflare, Akamai, Fastly,
+  CloudFront, Google frontends, Sucuri, Imperva, Microsoft edge, plus public
+  resolvers (Quad9, OpenDNS, AdGuard). Domain categories cover CDNs, social
+  platforms, web archives, URL shorteners and free webmail. Each hit returns a
+  `StopDecision` with `expand=False`, the matched category and a human reason;
+  those nodes are still recorded as context so the graph shows *why* a pivot
+  stopped. Cloud and VPS compute ranges (AWS, GCP, Azure, DigitalOcean) are
+  deliberately **not** stop-listed: phishing kits are routinely hosted there and
+  blocking them would hide real infrastructure.
+* `phishtrace/core/scoring.py` — selector-strength base weights (strong 0.9,
+  medium 0.65, weak 0.3), reliability multiplier per provider, corroboration
+  bonus (0.06 per extra independent source, capped at 0.18), edge and path
+  confidence, observation ranking and the `should_expand` gate.
+* `phishtrace/core/pivot.py` — `PivotEngine`: priority queue over selector
+  strength, one shared request `Budget` for the whole investigation, per-provider
+  token-bucket rate limiting, per-provider timeouts, a circuit breaker that opens
+  after 3 consecutive failures, hard caps (`max_depth`, `max_children_per_node`,
+  `max_nodes`), normalisation and de-duplication of observations before they are
+  persisted, and persistence of indicators, edges, events and provider runs.
+  Children of a non-expandable node inherit `context_only`, so a stop-listed seed
+  cannot leak expandable children.
+* `phishtrace/core/orchestrator.py` — `InvestigationRunner.run_seed()` creates or
+  reuses an investigation for the same normalised seed (`--no-reuse` forces a
+  fresh one), finalises it as `completed` or `partial` with coverage, stats and a
+  summary, and `validate_provider_keys()` health-checks keyed providers without
+  ever echoing a secret.
+* `phishtrace/cli.py` — `phishtrace run <seed>` with `--type`, `--json`,
+  `--no-sightings`, `--no-reuse`, `--verbose`, `--data-dir`, `--owner`,
+  `--config`. Prints indicator/edge/event/evidence counts, failed and skipped
+  providers, warnings, and uses "earliest observed" wording for the timeline.
+* `phishtrace/tests/test_phase3_engine.py` — 16 tests.
+
+Acceptance behaviours proven by tests:
+
+* A Cloudflare-IP seed expands exactly once; its children are context-only.
+* `max_children_per_node`, `max_nodes` and `max_depth` are honoured.
+* A provider that raises does not abort the investigation.
+* Re-running the same seed reuses the completed investigation with identical
+  graph counts and zero new edges.
+* A URL seed derives the hostname and pivots the hostname.
+* Exhausting the global request budget sets `stats.truncated`.
+* `validate_provider_keys()` reports presence without leaking the value.
+
+Live zero-key smoke run (`phishtrace run https://example.com`, bounded config:
+budget 40 requests, depth 1, 40 nodes, 90 s timeout):
+
+* Completed with exit 0 and wrote investigation, edges, events and evidence.
+* `urlhaus` and `threatfox` returned **HTTP 401** — abuse.ch now requires an
+  `Auth-Key` header. Both providers were converted to keyed providers reading
+  `ABUSECH_AUTH_KEY`, and the header is only sent when a key exists; they now
+  report as *skipped* with an explicit reason instead of failing at runtime.
+* `phishing_database` returned a 65.8 MB response and was rejected by the
+  16 MB response cap; needs a streaming/smaller endpoint (tracked in phase 8).
+* `memento` failed with `ConnectError: Name or service not known` —
+  `timetravel.mementoweb.org` appears to be defunct; the failure degraded to a
+  warning as designed.
+* `phishstats` returned HTTP 522 (upstream outage) and degraded to a warning.
+* `dns_intel` exhausted its per-provider DoH budget at 4 requests, which is the
+  intended budget behaviour, not an error.
+* Provider-level HTTP failures call `ctx.partial()`, so the run is recorded as
+  `ran` with warnings carrying the reason; the investigation still finishes.
+
+Verification: `98 passed` (phases 1–3).
 
 ## Known limitations (tracked, not hidden)
 

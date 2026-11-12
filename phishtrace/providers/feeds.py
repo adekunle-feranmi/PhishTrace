@@ -22,6 +22,13 @@ ABUSE_CH_THREATFOX = "https://threatfox-api.abuse.ch/api/v1/"
 ABUSE_CH_URLHAUS = "https://urlhaus-api.abuse.ch/v1/"
 
 
+def _abusech_headers(ctx) -> dict | None:
+    """abuse.ch APIs now require a free Auth-Key; omit the header when absent
+    so the registry can report the provider as skipped instead of failing 401."""
+    key = ctx.config.api_key("ABUSECH_AUTH_KEY")
+    return {"Auth-Key": key} if key else None
+
+
 def _seed_domain(ctx) -> str:
     indicator = ctx.indicator
     if indicator.type == "domain":
@@ -120,11 +127,12 @@ class UrlhausProvider(BaseProvider):
         name="urlhaus",
         accepts=("url", "domain", "file_hash"),
         emits=("url", "domain", "file_hash"),
+        api_keys=("ABUSECH_AUTH_KEY",),
         rate_limit=0.6,
         timeout=30.0,
         reliability=0.9,
         category="feeds",
-        description="URLhaus malware URL/payload database (keyless API)",
+        description="URLhaus malware URL/payload database (requires a free abuse.ch Auth-Key)",
         homepage="https://urlhaus.abuse.ch/",
         cache_ttl=1800.0,
     )
@@ -142,8 +150,8 @@ class UrlhausProvider(BaseProvider):
             return ctx.result
         res = await ctx.http.request(
             "POST", ABUSE_CH_URLHAUS + endpoint, data=payload, expect_json=True,
-            timeout=30.0, cache_key=f"urlhaus:{indicator.type}:{indicator.normalized}",
-            cache_ttl=1800.0,
+            headers=_abusech_headers(ctx), timeout=30.0,
+            cache_key=f"urlhaus:{indicator.type}:{indicator.normalized}", cache_ttl=1800.0,
         )
         if not res.ok:
             ctx.partial(f"urlhaus unavailable: {result_error(res)}")
@@ -197,11 +205,12 @@ class ThreatFoxProvider(BaseProvider):
         name="threatfox",
         accepts=("domain", "ip", "url", "file_hash"),
         emits=("domain", "ip", "url", "file_hash"),
+        api_keys=("ABUSECH_AUTH_KEY",),
         rate_limit=0.5,
         timeout=30.0,
         reliability=0.88,
         category="threat-intel",
-        description="abuse.ch ThreatFox IOC database (keyless API)",
+        description="abuse.ch ThreatFox IOC database (requires a free abuse.ch Auth-Key)",
         homepage="https://threatfox.abuse.ch/",
         cache_ttl=1800.0,
     )
@@ -216,7 +225,8 @@ class ThreatFoxProvider(BaseProvider):
         res = await ctx.http.post_json(
             ABUSE_CH_THREATFOX,
             json_body={"query": "search_ioc", "search_term": query_term},
-            timeout=30.0, cache_key=f"threatfox:{indicator.type}:{value}", cache_ttl=1800.0,
+            headers=_abusech_headers(ctx), timeout=30.0,
+            cache_key=f"threatfox:{indicator.type}:{value}", cache_ttl=1800.0,
         )
         if not res.ok:
             ctx.partial(f"threatfox unavailable: {result_error(res)}")

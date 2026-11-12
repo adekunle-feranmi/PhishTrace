@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import json
 import os
@@ -64,6 +65,74 @@ def cmd_serve(args) -> int:
     print(f"PhishTrace {__version__} listening on http://{config.host}:{config.port} "
           f"(auth={'on' if config.auth.enabled else 'off'}, active_fetch={config.fetcher.active_fetch})")
     uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level.lower(), access_log=True)
+    return 0
+
+
+def cmd_run(args) -> int:
+    config = load_config(args.config, validate=False)
+    if args.data_dir:
+        config.data_dir = Path(args.data_dir)
+    repo = _bootstrap(config)
+    from phishtrace.core.orchestrator import InvestigationRunner
+
+    progress = None
+    if args.verbose:
+        def progress(event: dict) -> None:
+            if event.get("event") == "node.start":
+                print(f"  [depth {event['depth']}] {event['type']}: {event['value']}", file=sys.stderr)
+            elif event.get("event") == "provider.done" and event.get("error"):
+                print(f"    ! {event['provider']}: {event['error']}", file=sys.stderr)
+
+    runner = InvestigationRunner(config, repo, progress=progress)
+    try:
+        result = asyncio.run(runner.run_seed(
+            args.seed,
+            kind=args.type,
+            reuse=not args.no_reuse,
+            owner=args.owner,
+            run_sightings=not args.no_sightings,
+        ))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - CLI boundary
+        print(f"investigation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    inv = result["investigation"]
+    counts = result["counts"]
+    print(f"Investigation : {inv['id']}" + (" (reused)" if result["reused"] else ""))
+    print(f"Seed          : {inv['seed_type']} {inv['seed_normalized']}")
+    print(f"Status        : {result['status']}")
+    print(f"Indicators    : {counts['indicators']}")
+    print(f"Edges         : {counts['edges']}")
+    print(f"Events        : {counts['events']}")
+    print(f"Sightings     : {counts['sightings']}")
+    print(f"Evidence      : {counts['evidence']}")
+    stats = result.get("stats") or {}
+    if stats.get("truncated"):
+        print(f"Truncated     : {stats['truncated']}")
+    if stats.get("stoplist_hits"):
+        print(f"Stop-list     : {stats['stoplist_hits']} context-only node(s)")
+    coverage = result.get("coverage") or {}
+    print(f"Providers ran : {', '.join(coverage.get('ran') or []) or 'none'}")
+    if result.get("failed"):
+        print("Failed providers:")
+        for item in result["failed"]:
+            print(f"  - {item['provider']}: {item['reason']}")
+    if result.get("skipped"):
+        print("Skipped providers:")
+        for item in result["skipped"]:
+            print(f"  - {item['provider']}: {item['reason']}")
+    if result.get("warnings"):
+        print("Warnings:")
+        for warning in result["warnings"][:15]:
+            print(f"  - {warning}")
+    print("Note          : all timestamps are 'earliest observed', not proof of first activity.")
     return 0
 
 
@@ -155,6 +224,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("create-admin", help="create or reset the administrator account")
     p.add_argument("--username")
     p.set_defaults(func=cmd_create_admin)
+
+    p = sub.add_parser("run", help="investigate a seed indicator")
+    p.add_argument("seed", help="URL, domain, IP, email, phone, hash, Telegram handle, analytics ID, ...")
+    p.add_argument("--type", default=None, help="force the seed selector type")
+    p.add_argument("--json", action="store_true", help="print the full result as JSON")
+    p.add_argument("--no-sightings", action="store_true", help="skip the social sightings stage")
+    p.add_argument("--no-reuse", action="store_true", help="force a new investigation even if this seed was run before")
+    p.add_argument("--data-dir")
+    p.add_argument("--owner", default="cli")
+    p.add_argument("--verbose", action="store_true", help="stream node progress to stderr")
+    p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("doctor", help="validate configuration, providers and keys")
     p.add_argument("--validate", action="store_true", help="make harmless live key-validation calls")
