@@ -118,10 +118,14 @@ class FetcherConfig(BaseModel):
     )
     kit_paths: list[str] = Field(
         default_factory=lambda: [
-            "/", "/logs", "/logs/", "/results", "/results/", "/result", "/admin",
-            "/panel", "/kit", "/kit.zip", "/kit.rar", "/kit.7z", "/logs.txt",
-            "/log.txt", "/results.txt", "/stolen", "/victims", "/data", "/db",
-            "/uploads", "/temp", "/tmp", "/backup", "/backup.zip", "/config",
+            # Ordered by investigative value: open logs and configuration
+            # disclosure first, archives last (the analyzer also sorts archives
+            # to the back so a small probe budget is never spent on them).
+            "/", "/logs", "/logs/", "/results", "/results/", "/result",
+            "/config.php", "/config", "/.env", "/admin",
+            "/panel", "/kit", "/logs.txt", "/log.txt", "/results.txt",
+            "/stolen", "/victims", "/data", "/db", "/uploads", "/temp", "/tmp",
+            "/backup", "/kit.zip", "/kit.rar", "/kit.7z", "/backup.zip",
         ]
     )
     max_assets: int = 25

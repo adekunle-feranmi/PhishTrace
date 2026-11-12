@@ -14,7 +14,7 @@ sandbox, Node not required, no outbound network needed for the test suite.
 | 2 | Normalizer + keyless providers + mocked-transport tests | done |
 | 3 | Pivot engine, stop-lists, scoring, caps, orchestrator | done |
 | 4 | Timeline merger, sightings, role classifier, archiver | done |
-| 5 | Isolated fetcher + kit analyzer + mock kit | pending |
+| 5 | Isolated fetcher + kit analyzer + mock kit | done |
 | 6 | Web UI (live progress, graph, timeline, evidence browser) | pending |
 | 7 | Reports (HTML/PDF/JSON/STIX/MD/CSV), abuse reports, OpenCTI/MISP | pending |
 | 8 | Phase B keyed providers and Phase C wrapped tools | pending |
@@ -259,6 +259,71 @@ Fixes made while writing these tests: `ProviderContext` exposes `sighting()`, no
 before reaching SQLAlchemy; role counts must be based on stored (capped) posts.
 
 Verification: `132 passed` (phases 1–4).
+
+## Phase 5 — isolated fetcher and static kit analyzer (completed)
+
+Delivered:
+
+* `phishtrace/core/fetcher.py` — `IsolatedFetcher`, the only code path allowed to
+  touch attacker infrastructure. It resolves the host once, rejects every
+  address that is not `is_global` (loopback, RFC1918, CGNAT 100.64/10, link-local
+  169.254.169.254, documentation 192.0.2.0/24, IPv6 loopback), revalidates on
+  every redirect hop, pins the connection to the validated IP while keeping the
+  real `Host` header and TLS SNI, accepts only `http`/`https`, blocks
+  management/database ports (`22,23,25,135,139,445,1433,3306,3389,5432,6379,9200,11211`),
+  strips credentials from URLs and proxies, enforces per-response and per-run
+  byte caps, never reuses cookies between requests, and records a fetch as
+  evidence only when an investigation is bound. `allow_localhost` is an explicit
+  test-only gate.
+* `phishtrace/analyzers/kit.py` — static phishing-kit analysis, no execution:
+  * Gated on `fetcher.active_fetch` plus either a hostile verdict or an explicit
+    `force=True`; refuses before making a single request otherwise.
+  * Landing page, same-origin scripts/styles/images only (third-party CDN URLs
+    are recorded, never fetched), a bounded set of common kit/exposure paths
+    (`/logs`, `/results`, `/config.php`, `/.env`, `/admin`, archives, ...) with a
+    small probe budget, soft-404 detection and a 403/Cloudflare challenge
+    classifier.
+  * Extraction of brand lure and confidence, title, form fields/action,
+    exfiltration e-mails, Telegram bot IDs + chat IDs (token reduced to bot ID
+    plus a truncated SHA-256 fingerprint), Discord/Slack/Telegram/generic
+    webhooks (paths redacted), analytics IDs, author handles and redirect chains.
+  * Credential exposure reported as count/type/masked local-part only; the same
+    dump reachable at `/logs` and `/logs/` is counted once by body hash.
+  * ZIP archives inspected in memory with traversal, absolute path, drive letter
+    and size-cap rejection; nothing is ever extracted to disk.
+  * Deterministic `file_tree_hash`, SHA-256 per file, and fuzzy hashes
+    (`ssdeep`/`tlsh` when installed, otherwise a labelled simhash64 fallback).
+  * `pivots()` emits normalizer-validated graph candidates and `to_db_dict()`
+    persists through `repo.add_kit` when a repository is bound.
+* `phishtrace/tests/kit_fixture.py` — harmless loopback mock kit
+  (`ThreadingHTTPServer` on `127.0.0.1:0`) serving a Microsoft 365 lure, JS/CSS/PNG
+  assets, a PHP source disclosure, open log/CSV dumps, a bot challenge, a safe
+  redirect, a metadata-service redirect, a 200 KB body, a ZIP with a zip-slip
+  member and an external-CDN reference. No real credentials, no outbound traffic.
+* `phishtrace/tests/test_phase5_kit.py` — 21 tests including closed-gate (zero
+  requests), verdict gate, full signal extraction, probe classification,
+  credential masks, in-memory archives, redirect handling, SSRF denials
+  (CGNAT/documentation/link-local/IPv6/protocol), blocked port 22, cookie
+  non-reuse, byte-cap truncation, zero probe budget, repository persistence and
+  evidence de-duplication, zip-slip/oversize units, simhash stability and
+  `kind_for` classification.
+
+Bugs found and fixed while testing:
+
+* Asset text was cached only when an evidence id existed, so runs without a
+  repository silently lost script content and webhook/Telegram pivots.
+* Telegram redaction missed tokens embedded in `api.telegram.org/bot<id>:<token>`
+  URLs because the token has no word boundary after `bot`; the token regex now
+  accepts the `bot` prefix and redaction keeps the bot ID only.
+* Literal Telegram webhook URLs were echoed in `url_redacted` including the token;
+  they are now reduced to `bot<redacted>`.
+* Probe credential counts double-counted the same body at `/logs` and `/logs/`.
+* The mock server reused the previous instance's request log, which could mask
+  probe-budget regressions.
+* `kind_for` now prioritises content type and `<?php`/`<html` sniffing before the
+  file suffix, so disclosed source and open logs are classified correctly.
+
+Verification: `153 passed` (phases 1–5).
 
 ## Known limitations (tracked, not hidden)
 
