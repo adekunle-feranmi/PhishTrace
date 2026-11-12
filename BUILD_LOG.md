@@ -16,8 +16,8 @@ sandbox, Node not required, no outbound network needed for the test suite.
 | 4 | Timeline merger, sightings, role classifier, archiver | done |
 | 5 | Isolated fetcher + kit analyzer + mock kit | done |
 | 6 | Web UI (live progress, graph, timeline, evidence browser) | done |
-| 7 | Reports (HTML/PDF/JSON/STIX/MD/CSV), abuse reports, OpenCTI/MISP | pending |
-| 8 | Phase B keyed providers and Phase C wrapped tools | pending |
+| 7 | Reports (HTML/PDF/JSON/STIX/MD/CSV), abuse reports, OpenCTI/MISP | done |
+| 8 | Phase B keyed providers and Phase C wrapped tools | done |
 | 9 | Hardening review, load test, docs, Docker, systemd | pending |
 
 ## Phase 1 — skeleton
@@ -472,3 +472,72 @@ MISP or OpenCTI instance; both push paths use `httpx.MockTransport`.
 Known limits: the PDF renderer is dependency-light and produces a simple
 text-flow document rather than a designed layout; MISP/OpenCTI payloads follow
 the documented shapes but were not pushed to a live instance in this phase.
+
+## Phase 8 — keyed providers and wrapped CLI tools
+
+Added the provider classes that need a credential or an external binary, and
+taught the registry to label every provider with the phase it belongs to.
+
+* `phishtrace/providers/keyed.py` — ten Phase B providers behind normal
+  `ProviderMeta` classes: VirusTotal, Shodan, Censys, SecurityTrails, AlienVault
+  OTX, AbuseIPDB, GreyNoise, Hybrid Analysis, MalwareBazaar and WhoisXML. Each
+  declares the indicator types it accepts, the credential variables it needs and
+  the fields it maps into the normalized indicator/edge model; the API key stays
+  in headers except where the vendor only accepts a query parameter, and the
+  evidence URL is built with the key redacted so it can be shown in the UI.
+* `phishtrace/providers/tool_wrappers.py` — eight Phase C providers that shell
+  out to `dnstwist`, `theHarvester`, `sherlock`, `maigret`, `holehe`, `ghunt`,
+  `phoneinfoga` and `spiderfoot`. All of them run through the existing bounded
+  `ToolRunner`: argv-only (no shell), sanitized environment, scratch working
+  directory, process-group kill on timeout, output byte caps and a leading `-`
+  guard on targets. Parsers cover JSON, CSV and plain-text output shapes.
+* Phase tags on `ProviderMeta` (`phase="A" | "B" | "C"`), surfaced in
+  `/api/providers` and the UI so an operator can see which providers are
+  keyless, which need a key and which need a binary. The registry now reports
+  `loaded 41 errors 0` with `Counter({'A': 23, 'B': 10, 'C': 8})`.
+* `config.yaml` providers block rewritten to the real 41 names, with `timeout:`
+  at provider level and `path`/`mode`/`max_output` under `options:`. The two
+  active account probes (`holehe`, `ghunt`) ship disabled and require
+  `legal_acknowledged: true` because they touch third-party accounts; the other
+  wrappers only read public data and no longer carry the acknowledgement gate.
+  Unimplemented options moved to a commented "planned, not implemented" list.
+* `docs/PROVIDERS.md` — discovery model, per-phase tables with credentials,
+  binaries and options, the provider behaviour contract (`can_run`, skip reasons,
+  evidence, budget), the security controls in the tool runner and the steps for
+  adding a provider.
+* `phishtrace/tests/test_phase8_providers.py` — 38 tests. Keyed providers are
+  exercised through `httpx.MockTransport` payloads (VirusTotal v3, Shodan,
+  Censys, SecurityTrails, OTX, AbuseIPDB, GreyNoise, Hybrid Analysis,
+  MalwareBazaar, WhoisXML); wrappers are exercised against `/bin/sh` stub
+  scripts that emit representative JSON/CSV/text, so no real binary or network
+  call is needed.
+
+Bugs found and fixed while testing:
+
+* Shodan, Censys and VirusTotal parsed an ASN label such as `AS64501` with
+  `as_int()`, got `0` and emitted `AS0`. A shared `_asn_label()` helper now
+  strips the prefix and keeps the digits.
+* Censys returning `{"result": null}` was treated as success (the empty dict
+  passed the `isinstance(dict)` check and the event was then dropped for a
+  missing timestamp), and VirusTotal with an empty `data.attributes` did the
+  same. Both now record a partial result with an explicit reason instead of
+  reporting a clean run that produced nothing.
+* Sherlock's `"available"` state (meaning no profile) was counted as a hit;
+  only `"claimed"`/`"found"` are accepted now.
+* `belongs_to_domain()` could leak out-of-scope addresses: it compared the
+  target against the registrable domain of the host, so `elsewhere.example`
+  matched `evil-login.example` because both collapse to `example`. The helper is
+  now a strict `host_matches(host, domain)` and theHarvester only keeps
+  hostnames inside the investigated domain.
+* Evidence URLs for keyed providers embedded the API key in the query string;
+  they are now recorded with the secret redacted.
+
+Verification: `223 passed` for the full suite (185 through Phase 7 plus the 38
+new tests), one third-party Starlette/httpx deprecation warning. `compileall`
+on the package and `git diff --check` are clean.
+
+Known limits: none of the eight wrapped binaries is installed in this
+environment, so their tests use stub scripts and the parsers are verified
+against documented output shapes rather than live tool versions. Keyed providers
+are verified against mocked payloads; live API responses, quota behaviour and
+vendor-side schema changes were not exercised in this phase.

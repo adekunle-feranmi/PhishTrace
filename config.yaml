@@ -91,70 +91,64 @@ reports:
     model: ""
 
 providers:
-  # ---- Phase A: no API key required ---------------------------------------
-  crtsh:        { enabled: true }
-  urlscan:      { enabled: true }
-  urlscan_search: { enabled: true }
-  dns:          { enabled: true }
-  http_fingerprint: { enabled: true }
-  urlhaus:      { enabled: true }
-  threatfox:    { enabled: true }
-  openphish:    { enabled: true }
+  # ---- Phase A: keyless sources -------------------------------------------
+  # Everything listed here is implemented; a source that needs a key or a
+  # binary still runs, but the registry reports it as "skipped" with a reason.
+  crt_sh:        { enabled: true }
+  urlscan:       { enabled: true }
+  urlhaus:       { enabled: true }
+  threatfox:     { enabled: true }
+  openphish:     { enabled: true }
   phishing_database: { enabled: true }
-  phishtank:    { enabled: true }   # needs a free API key, skipped without one
-  wayback:      { enabled: true }
-  archive_today: { enabled: true }
-  memento:      { enabled: true }
-  commoncrawl:  { enabled: true }
-  certspotter:  { enabled: true }
-  hackertarget: { enabled: true }
-  threatminer:  { enabled: true }
-  phishstats:   { enabled: true }
+  phishtank:     { enabled: true }   # free key: PHISHTANK_API_KEY, skipped without one
+  wayback:       { enabled: true }
+  memento:       { enabled: true }
+  certspotter:   { enabled: true }
+  hackertarget:  { enabled: true }
+  threatminer:   { enabled: true }
+  phishstats:    { enabled: true }
   shodan_internetdb: { enabled: true }
-  ipinfo:       { enabled: true }
-  hudsonrock:   { enabled: true }
-  favicon:      { enabled: true }
-  jarm:         { enabled: true }
-  typosquat:    { enabled: true }
-  dns_axfr:     { enabled: false }
-  shodan:       { enabled: true }
-  censys:       { enabled: true }
-  securitytrails: { enabled: true }
-  virustotal:   { enabled: true }
-  alienvault_otx: { enabled: true }
-  abuseipdb:    { enabled: true }
-  greynoise:    { enabled: true }
-  hybrid_analysis: { enabled: true }
-  malwarebazaar: { enabled: true }
-  misp:         { enabled: true }
-  opencti:      { enabled: true }
-  telegram:     { enabled: true }
-  spiderfoot:   { enabled: true, options: { mode: cli, cli_path: "", rest_url: "", modules: "sfp_dnsresolve,sfp_crt,sfp_whois,sfp_urlscan,sfp_virustotal,sfp_otx,sfp_haveibeenpwned" } }
-  theharvester: { enabled: true }
-  holehe:       { enabled: true }
-  maigret:      { enabled: true }
-  sherlock:     { enabled: true }
-  phoneinfoga:  { enabled: true }
-  ghunt:        { enabled: true }
-  dnstwist:     { enabled: true }
-  # breach providers disabled by default -- legal review required
-  dehashed:     { enabled: false, options: { legal_acknowledged: false } }
-  intelx:       { enabled: true }
-  # ---- Phase B / C keyed or wrapped tools (skip cleanly without keys) ----
-  youtube:      { enabled: true }
-  x_search:     { enabled: true }
-  reddit:       { enabled: true }
-  bluesky:      { enabled: true }
-  mastodon:     { enabled: true }
-  serpapi:      { enabled: true }
-  brave_search: { enabled: true }
-  google_cse:   { enabled: true }
-  rdap:         { enabled: true }
-  whoisxml:     { enabled: true }
-  domaintools:  { enabled: true }
-  securitytrails_dns: { enabled: false }
-  validin:      { enabled: true }
-  silentpush:   { enabled: true }
-  netlas:       { enabled: true }
-  criminalip:   { enabled: true }
-  greynoise_ri: { enabled: true }
+  ipinfo:        { enabled: true }
+  hudsonrock:    { enabled: true }
+  typosquat:     { enabled: true }
+  dns_intel:     { enabled: true }
+  rdap:          { enabled: true }
+  telegram_public: { enabled: true }
+  reddit:        { enabled: true }
+  bluesky:       { enabled: true }
+  mastodon:      { enabled: true }
+
+  # ---- Phase B: keyed APIs ------------------------------------------------
+  # A provider stays inert until its variable is present in .env; the report
+  # coverage section then shows which sources could not be consulted.
+  virustotal:    { enabled: true, timeout: 45 }
+  shodan:        { enabled: true, timeout: 45 }
+  censys:        { enabled: true, timeout: 45 }
+  securitytrails: { enabled: true, timeout: 30 }
+  whoisxml:      { enabled: true, timeout: 30 }
+  alienvault_otx: { enabled: true, timeout: 30 }
+  abuseipdb:     { enabled: true, timeout: 30 }
+  greynoise:     { enabled: true, timeout: 30 }
+  hybrid_analysis: { enabled: true, timeout: 45 }
+  malwarebazaar: { enabled: true, timeout: 30 }   # anonymous works; MALWAREBAZAAR_API_KEY raises limits
+
+  # ---- Phase C: wrapped CLI tools -----------------------------------------
+  # `path` is optional: without it the binary must be on PATH.  `timeout` is
+  # enforced by the runner together with a hard stdout/stderr byte cap.
+  dnstwist:      { enabled: true, timeout: 300, options: { path: "", max_output: 4000000 } }
+  theharvester:  { enabled: true, timeout: 300, options: { path: "", sources: "bing", limit: 200 } }
+  spiderfoot:    { enabled: true, timeout: 600, options: { path: "", mode: cli, modules: "sfp_dnsresolve,sfp_crt,sfp_whois" } }
+  sherlock:      { enabled: true, timeout: 300, options: { path: "" } }
+  maigret:       { enabled: true, timeout: 300, options: { path: "" } }
+  phoneinfoga:   { enabled: true, timeout: 120, options: { path: "" } }
+  # Active account probes: stay off until an operator records scope sign-off.
+  holehe:        { enabled: false, options: { path: "", legal_acknowledged: false } }
+  ghunt:         { enabled: false, options: { path: "", cookies: "", legal_acknowledged: false } }
+
+  # ---- Planned, not implemented -------------------------------------------
+  # These names are accepted in config.yaml (no error) but no plugin exists yet;
+  # docs/PROVIDERS.md tracks them.  Keep keys in .env for the day they land.
+  # search: youtube, x_search, serpapi, brave_search, google_cse, shodan_search
+  # feeds: domaintools, validin, silentpush, netlas, criminalip, greynoise_ri
+  # breach: dehashed, intelx  (legal review required before enabling)
+  # integrations: misp, opencti, telegram

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from phishtrace.models import iso, utcnow
 
@@ -50,6 +51,33 @@ def redact_mapping(data: Any) -> Any:
     if isinstance(data, list):
         return [redact_mapping(item) for item in data]
     return data
+
+
+def redact_url(url: str | None) -> str | None:
+    """Return ``url`` with secret-looking query values replaced by ``[REDACTED]``.
+
+    Providers that must authenticate through the query string (Shodan, WhoisXML)
+    otherwise write the live key into the evidence table, where it outlives the
+    request and is shown by the evidence browser.
+    """
+    if not url or "?" not in url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.query:
+        return url
+    rendered: list[str] = []
+    for pair in parts.query.split("&"):
+        if not pair:
+            continue
+        name = pair.partition("=")[0]
+        if any(marker in name.lower() for marker in SENSITIVE_PARAMS):
+            rendered.append(f"{name}={REDACTED}")
+        else:
+            rendered.append(pair)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "&".join(rendered), parts.fragment))
 
 
 @dataclass
@@ -113,10 +141,11 @@ class EvidenceStore:
         if not raw_path.exists():
             self._atomic_write(raw_path, body)
         safe_request = redact_mapping(request)
+        safe_url = redact_url(url)
         meta = {
             "provider": provider,
             "request": safe_request,
-            "url": url,
+            "url": safe_url,
             "status_code": status_code,
             "content_type": content_type,
             "sha256": sha,
@@ -139,7 +168,7 @@ class EvidenceStore:
             raw_response_path=str(raw_path),
             sha256=sha,
             retrieved_at=retrieved,
-            url=url,
+            url=safe_url,
             status_code=status_code,
             content_type=content_type,
             size_bytes=len(body),

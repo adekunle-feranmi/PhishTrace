@@ -120,10 +120,16 @@ def host_matches(host: str, needle: str) -> bool:
 
 
 def belongs_to_domain(url_or_host: Any, domain: str) -> bool:
+    """True when the host is ``domain`` itself or a subdomain of it.
+
+    Deliberately strict: an earlier version also accepted hosts whose registrable
+    domain contained the target, which let ``stranger@elsewhere.example`` pass as
+    in-scope when the public-suffix lookup collapsed both to ``example``.
+    """
     host = url_host(url_or_host if "//" in str(url_or_host) else f"http://{url_or_host}")
     if not host:
         return False
-    return host_matches(host, domain) or host_matches(domain, registrable_domain(host))
+    return host_matches(host, domain)
 
 
 def safe_ip(value: Any) -> str | None:
