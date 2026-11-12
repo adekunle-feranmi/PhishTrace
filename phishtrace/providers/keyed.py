@@ -289,74 +289,72 @@ class CensysProvider(_KeyedProvider):
         phase="B",
         accepts=("ip",),
         emits=("domain", "asn"),
-        api_keys=("CENSYS_API_ID", "CENSYS_API_SECRET"),
+        api_keys=("CENSYS_API_TOKEN",),
         rate_limit=0.1,
         timeout=45.0,
         reliability=0.85,
         category="attack-surface",
-        description="Certificate and service observations for an IP from Censys Platform",
+        description="Host service and certificate observations for an IP (Censys Platform asset lookup)",
         homepage="https://censys.com/",
         cache_ttl=3600.0,
     )
 
     async def run(self, ctx):
-        api_id = self.key(ctx.config)
-        api_secret = ctx.config.api_key("CENSYS_API_SECRET")
-        if not api_id or not api_secret:
-            ctx.partial("CENSYS_API_ID / CENSYS_API_SECRET not configured")
+        # Censys retired the legacy Search API v2 on 2026-09-30, and the Platform
+        # search endpoint needs a paid organization.  The per-asset lookup still
+        # works on the free wallet with a Personal Access Token, so that is the
+        # only call this provider makes.
+        token = self.key(ctx.config)
+        if not token:
+            ctx.partial("CENSYS_API_TOKEN not configured")
             return ctx.result
         ip = safe_ip(ctx.indicator.normalized)
         if not ip:
             ctx.partial("censys needs an IP address")
             return ctx.result
-        token = base64.b64encode(f"{api_id}:{api_secret}".encode()).decode()
         res = await ctx.http.get_json(
-            f"https://search.censys.io/api/v2/hosts/{ip}",
-            headers={"Authorization": f"Basic {token}", "Accept": "application/json"},
+            f"https://api.platform.censys.io/v3/global/asset/host/{ip}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
             timeout=45.0, max_bytes=3_000_000,
             cache_key=f"censys:{ip}", cache_ttl=3600.0,
         )
         if not res.ok:
             ctx.partial(f"censys unavailable: {result_error(res)}")
             return ctx.result
-        data = res.data if isinstance(res.data, dict) else {}
-        result = data.get("result")
-        if not isinstance(result, dict) or not result:
-            ctx.partial("censys returned no result object")
+        payload = res.data if isinstance(res.data, dict) else {}
+        result = first(payload, "result", default={})
+        resource = first(result, "resource", default={}) if isinstance(result, dict) else {}
+        if not isinstance(resource, dict) or not resource:
+            ctx.partial("censys returned no host resource")
             return ctx.result
-        services = as_list(result.get("services"))
-        ports = []
-        for service in services[:50]:
-            if not isinstance(service, dict):
-                continue
-            port = as_int(service.get("port"))
-            if port:
-                ports.append(port)
-        last_seen = parse_timestamp(first(result, "last_updated_at", "last_observed_at"))
-        asn = first(result, "autonomous_system", default={})
+        services = [svc for svc in as_list(resource.get("services")) if isinstance(svc, dict)]
+        ports = [port for port in (as_int(svc.get("port")) for svc in services[:50]) if port]
+        scan_times = [parse_timestamp(svc.get("scan_time")) for svc in services[:50]]
+        last_seen = max((stamp for stamp in scan_times if stamp), default=None)
+        asn = first(resource, "autonomous_system", default={})
+        location = first(resource, "location", default={})
         asn_number = first(asn, "asn") if isinstance(asn, dict) else None
         org = text(first(asn, "name", "description")) if isinstance(asn, dict) else ""
+        country = text(first(location, "country_code")) if isinstance(location, dict) else ""
         ctx.event(
             last_seen, kind="service-exposure",
             label=f"Censys: {len(ports)} observed service(s) on {ip}",
             detail="ports=" + ",".join(str(port) for port in ports[:20]),
             evidence_id=res.evidence_id, precision="hour", indicator_value=ip,
-            meta={"ports": ports, "labels": [text(v) for v in as_list(result.get("labels"))][:10]},
+            meta={"ports": ports, "service_count": as_int(resource.get("service_count")),
+                  "labels": [text(v) for v in as_list(resource.get("labels"))][:10]},
         )
         asn_label = _asn_label(asn_number)
         if asn_label:
+            asn_country = text(first(asn, "country_code", "country")) if isinstance(asn, dict) else ""
             ctx.emit("asn", asn_label, "hosted-on", SelectorStrength.MEDIUM,
                      evidence_id=res.evidence_id, tags=["censys"],
-                     meta={"org": org,
-                           "country": text(first(asn, "country") if isinstance(asn, dict) else "")})
+                     meta={"org": org, "country": asn_country or country})
         for service in services[:50]:
-            if not isinstance(service, dict):
+            cert = first(service, "cert", default={})
+            if not isinstance(cert, dict):
                 continue
-            tls = first(service, "tls", default={})
-            cert = first(tls, "certificates", default={}) if isinstance(tls, dict) else {}
-            leaf = first(cert, "leaf", default={}) if isinstance(cert, dict) else {}
-            names = as_list(first(leaf, "names", default=[])) if isinstance(leaf, dict) else []
-            for name in names[:20]:
+            for name in as_list(first(cert, "names", default=[]))[:20]:
                 host = safe_domain(str(name).lstrip("*."))
                 if host:
                     ctx.emit("domain", host, "certificate-san", SelectorStrength.MEDIUM,
@@ -643,6 +641,11 @@ class GreyNoiseProvider(_KeyedProvider):
             cache_key=f"greynoise:{ip}", cache_ttl=1800.0,
         )
         if not res.ok:
+            if res.status == 404:
+                # The community endpoint answers 404 for any IP it has never
+                # observed; that is a "no record" answer, not a broken key.
+                ctx.result.notes.append("greynoise: no observation record for this IP")
+                return ctx.result
             ctx.partial(f"greynoise unavailable: {result_error(res)}")
             return ctx.result
         data = res.data if isinstance(res.data, dict) else {}
@@ -698,9 +701,10 @@ class HybridAnalysisProvider(_KeyedProvider):
         headers = {"api-key": key, "Accept": "application/json",
                    "User-Agent": "Falcon Sandbox"}
         if indicator.type == "file_hash":
+            # POST /search/hash was retired in API 2.35; the GET form is current.
             res = await ctx.http.request(
-                "POST", "https://www.hybrid-analysis.com/api/v2/search/hash",
-                data={"hash": indicator.normalized}, headers=headers,
+                "GET", "https://hybrid-analysis.com/api/v2/search/hash",
+                params={"hash": indicator.normalized}, headers=headers,
                 expect_json=True, timeout=45.0, max_bytes=4_000_000,
                 cache_key=f"ha:hash:{indicator.normalized}", cache_ttl=3600.0,
             )
@@ -712,9 +716,18 @@ class HybridAnalysisProvider(_KeyedProvider):
                 cache_key=f"ha:term:{indicator.normalized}", cache_ttl=3600.0,
             )
         if not res.ok:
+            if res.status == 404:
+                ctx.result.notes.append("hybrid-analysis: no reports for this indicator")
+                return ctx.result
             ctx.partial(f"hybrid-analysis unavailable: {result_error(res)}")
             return ctx.result
-        rows = res.data if isinstance(res.data, list) else as_list(first(res.data or {}, "result", default=[]))
+        payload = res.data if isinstance(res.data, dict) else {}
+        if isinstance(res.data, list):
+            rows = res.data
+        elif isinstance(payload.get("reports"), list):
+            rows = payload["reports"]          # GET /search/hash shape
+        else:
+            rows = as_list(first(payload, "result", default=[]))
         samples = [row for row in rows if isinstance(row, dict)]
         if not samples:
             ctx.partial("hybrid-analysis returned no reports")

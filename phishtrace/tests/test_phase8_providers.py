@@ -185,42 +185,46 @@ async def test_shodan_failure_is_partial_not_fatal(tmp_path):
 # --------------------------------------------------------------------------- #
 # Censys
 # --------------------------------------------------------------------------- #
-async def test_censys_basic_auth_and_certificate_names(tmp_path):
+async def test_censys_bearer_token_and_certificate_names(tmp_path):
     payload = {
         "result": {
-            "services": [
-                {"port": 443, "tls": {"certificates": {"leaf": {
-                    "names": ["*.evil-login.example", "mail.evil-login.example", "bad name"]}}}},
-                {"port": 22},
-            ],
-            "autonomous_system": {"asn": 64502, "name": "Example Hosting", "country": "US"},
-            "last_updated_at": "2026-01-02T03:04:05Z",
-            "labels": ["cdn"],
+            "resource": {
+                "ip": "203.0.113.77",
+                "service_count": 2,
+                "services": [
+                    {"port": 443, "protocol": "HTTP", "scan_time": "2026-01-02T03:04:05Z",
+                     "cert": {"names": ["*.evil-login.example", "mail.evil-login.example", "bad name"]}},
+                    {"port": 22, "protocol": "SSH", "scan_time": "2026-01-02T03:04:05Z"},
+                ],
+                "autonomous_system": {"asn": 64502, "name": "Example Hosting", "country_code": "US"},
+                "location": {"country_code": "US"},
+                "labels": ["cdn"],
+            }
         }
     }
     run = await run_provider(
         tmp_path, CensysProvider, "203.0.113.77",
-        route({"search.censys.io/api/v2/hosts/": payload}),
-        env={"CENSYS_API_ID": "censys-id", "CENSYS_API_SECRET": "censys-secret"},
+        route({"api.platform.censys.io/v3/global/asset/host/": payload}),
+        env={"CENSYS_API_TOKEN": "censys_pat_test"},
     )
     assert run.values("domain") == {"evil-login.example", "mail.evil-login.example"}
     assert run.values("asn") == {"AS64502"}
     event = next(e for e in run.result.events if e.kind == "service-exposure")
     assert event.meta["ports"] == [443, 22]
 
-    header = run.requests[0].headers["authorization"]
-    decoded = base64.b64decode(header.removeprefix("Basic ")).decode()
-    assert decoded == "censys-id:censys-secret"
+    request = run.requests[0]
+    assert request.method == "GET"
+    assert request.headers["authorization"] == "Bearer censys_pat_test"
 
 
 async def test_censys_malformed_result_is_partial(tmp_path):
     run = await run_provider(
         tmp_path, CensysProvider, "203.0.113.77",
-        route({"search.censys.io": {"result": None}}),
-        env={"CENSYS_API_ID": "censys-id", "CENSYS_API_SECRET": "censys-secret"},
+        route({"api.platform.censys.io": {"result": {"resource": {}}}}),
+        env={"CENSYS_API_TOKEN": "censys_pat_test"},
     )
     assert run.result.partial is True
-    assert "no result object" in note_text(run)
+    assert "no host resource" in note_text(run)
 
 
 # --------------------------------------------------------------------------- #
@@ -345,7 +349,7 @@ async def test_hybrid_analysis_hash_search_picks_highest_threat_score(tmp_path):
     ]
     run = await run_provider(
         tmp_path, HybridAnalysisProvider, SHA_A,
-        route({"hybrid-analysis.com/api/v2/search/hash": payload}),
+        route({"hybrid-analysis.com/api/v2/search/hash": {"sha256s": [SHA_A], "reports": payload}}),
         env={"HYBRID_ANALYSIS_API_KEY": "ha-test-key"},
     )
     assert {SHA_A, SHA_B} <= run.values("file_hash")
@@ -354,18 +358,39 @@ async def test_hybrid_analysis_hash_search_picks_highest_threat_score(tmp_path):
     assert event.meta["family"] == "Emotet"
 
     request = run.requests[0]
-    assert request.method == "POST"
-    assert SHA_A.encode() in request.content
+    assert request.method == "GET"
+    assert SHA_A in str(request.url)
     assert request.headers["api-key"] == "ha-test-key"
 
 
 async def test_hybrid_analysis_empty_result_is_partial(tmp_path):
     run = await run_provider(
         tmp_path, HybridAnalysisProvider, SHA_A,
-        route({"hybrid-analysis.com": {"result": []}}),
+        route({"hybrid-analysis.com": {"sha256s": [], "reports": []}}),
         env={"HYBRID_ANALYSIS_API_KEY": "ha-test-key"},
     )
     assert run.result.partial is True
+    assert "no reports" in note_text(run)
+
+
+async def test_greynoise_404_is_no_record_not_failure(tmp_path):
+    run = await run_provider(
+        tmp_path, GreyNoiseProvider, SEED_IP,
+        route({"api.greynoise.io": json_response(
+            {"ip": SEED_IP, "noise": False, "message": "IP not observed"}, 404)}),
+        env={"GREYNOISE_API_KEY": "gn-test-key"},
+    )
+    assert run.result.partial is False
+    assert "no observation record" in note_text(run)
+
+
+async def test_hybrid_analysis_404_is_no_reports_not_failure(tmp_path):
+    run = await run_provider(
+        tmp_path, HybridAnalysisProvider, SHA_A,
+        route({"hybrid-analysis.com": json_response({"message": "Not Found"}, 404)}),
+        env={"HYBRID_ANALYSIS_API_KEY": "ha-test-key"},
+    )
+    assert run.result.partial is False
     assert "no reports" in note_text(run)
 
 
@@ -487,7 +512,7 @@ def test_registry_exposes_phase_b_and_c_providers():
                "spiderfoot", "theharvester"}
     assert {name for name, cls in by_name.items() if cls.meta.phase == "B"} == phase_b
     assert {name for name, cls in by_name.items() if cls.meta.phase == "C"} == phase_c
-    assert by_name["censys"].meta.api_keys == ("CENSYS_API_ID", "CENSYS_API_SECRET")
+    assert by_name["censys"].meta.api_keys == ("CENSYS_API_TOKEN",)
 
 
 def test_tool_provider_availability_gates(tmp_path):
