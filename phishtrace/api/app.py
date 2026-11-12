@@ -16,6 +16,7 @@ from phishtrace.api.auth import (
     require_csrf, validate_password, validate_username, verify_password,
 )
 from phishtrace.api.deps import current_user
+from phishtrace.api.runs import RunManager
 from phishtrace.config import Config, ensure_dirs, load_config
 from phishtrace.core.registry import Registry
 from phishtrace.models import iso, utcnow
@@ -67,6 +68,7 @@ def create_app(
         max_attempts=config.auth.login_max_attempts,
         window_seconds=config.auth.login_window_seconds,
     )
+    app.state.runs = RunManager(config, repo, registry)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

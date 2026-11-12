@@ -3,23 +3,261 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
   <title>PhishTrace Console</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
   <header class="topbar">
-    <div class="brand"><span class="mark">PT</span> PhishTrace <span class="tag">v{{ app_version }}</span></div>
+    <div class="brand">
+      <span class="mark" aria-hidden="true">PT</span>
+      <span class="brand-name">PhishTrace</span>
+      <span class="tag">v{{ app_version }}</span>
+      <span class="tag subtle">defensive intel</span>
+    </div>
     <div class="top-actions">
-      <span id="who" class="muted"></span>
+      <span id="conn" class="conn" title="Live channel state"><span class="dot"></span><span id="conn-text">connecting</span></span>
+      <span id="who" class="muted" aria-live="polite"></span>
       <button id="logout" class="ghost" type="button">Sign out</button>
     </div>
   </header>
-  <main id="app" class="shell">
-    <section class="panel">
-      <h2>Investigation console</h2>
-      <p class="muted">The console is loading. If this message persists, check that <code>/static/app.js</code> is present.</p>
-    </section>
-  </main>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <section class="panel start-panel">
+        <div class="panel-head">
+          <h2>New investigation</h2>
+          <span class="kicker">one click</span>
+        </div>
+        <form id="start-form" autocomplete="off">
+          <label class="field-label" for="seed">Seed indicator</label>
+          <textarea id="seed" name="seed" rows="2" maxlength="2048" spellcheck="false"
+                    placeholder="hxxps://login-verify.example/ or @handle, +234…, 8.8.8.8, sha256…" required></textarea>
+          <div class="form-row">
+            <label class="field-label compact" for="kind">Type</label>
+            <select id="kind" name="kind">
+              <option value="">Auto-detect</option>
+              <option value="url">URL</option>
+              <option value="domain">Domain</option>
+              <option value="email">Email</option>
+              <option value="phone">Phone</option>
+              <option value="ip">IP address</option>
+              <option value="sha256">File hash (SHA-256)</option>
+              <option value="telegram">Telegram handle / bot</option>
+              <option value="analytics">Analytics ID</option>
+            </select>
+          </div>
+          <label class="check"><input id="run-sightings" type="checkbox" checked> Collect social sightings &amp; archive them</label>
+          <button id="start-btn" class="primary" type="submit">Investigate</button>
+          <p id="start-error" class="error" role="alert" hidden></p>
+          <p class="hint">Works with zero API keys. Providers without credentials are reported as skipped in Coverage, never silently ignored.</p>
+        </form>
+      </section>
+
+      <section class="panel list-panel">
+        <div class="panel-head">
+          <h2>Investigations</h2>
+          <div class="head-actions">
+            <span id="inv-count" class="kicker">0</span>
+            <button id="refresh-list" class="icon-btn" type="button" title="Refresh list" aria-label="Refresh investigation list">↻</button>
+          </div>
+        </div>
+        <div id="inv-list" class="inv-list"><p class="muted small">Loading…</p></div>
+      </section>
+    </aside>
+
+    <main id="main" class="main">
+      <section id="empty" class="panel empty-state">
+        <div class="empty-mark" aria-hidden="true">◎</div>
+        <h1>Trace a phishing operation end to end.</h1>
+        <p class="muted">Start with a URL, domain, email, phone number, IP, certificate or file hash, Telegram handle or analytics ID. PhishTrace pivots across passive sources, builds an infrastructure graph, merges the earliest observed timeline, and collects attributable social sightings.</p>
+        <ul class="empty-points">
+          <li><strong>Coverage first.</strong> Every provider that ran, failed or was skipped is listed with a reason.</li>
+          <li><strong>Evidence, not guesses.</strong> Observations keep their source, confidence and raw capture.</li>
+          <li><strong>Safe by default.</strong> Attacker infrastructure is only contacted by the isolated fetcher, and only when explicitly enabled.</li>
+        </ul>
+      </section>
+
+      <div id="workspace" hidden>
+        <section class="panel overview-panel">
+          <div class="overview-head">
+            <div class="seed-block">
+              <div class="eyebrow"><span id="ov-type" class="type-chip">url</span><span id="ov-status" class="status-pill">running</span><span id="ov-mode" class="kicker"></span></div>
+              <h1 id="ov-seed" class="seed-value">—</h1>
+              <div class="meta-line">
+                <span id="ov-id" class="mono small"></span>
+                <button id="copy-id" class="link-btn" type="button">copy id</button>
+                <span id="ov-started" class="muted small"></span>
+              </div>
+            </div>
+            <div class="overview-actions">
+              <button id="refresh-inv" class="ghost" type="button">Refresh</button>
+              <a id="raw-json" class="ghost link-button" href="#" target="_blank" rel="noopener noreferrer">Open API</a>
+            </div>
+          </div>
+
+          <div class="progress-wrap" aria-live="polite">
+            <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+            <div class="progress-meta">
+              <span id="stage-label" class="stage-label">starting</span>
+              <span id="elapsed" class="muted small"></span>
+              <span id="terminal-note" class="small"></span>
+            </div>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat"><span class="stat-value" id="c-indicators">0</span><span class="stat-label">indicators</span></div>
+            <div class="stat"><span class="stat-value" id="c-edges">0</span><span class="stat-label">edges</span></div>
+            <div class="stat"><span class="stat-value" id="c-sightings">0</span><span class="stat-label">sightings</span></div>
+            <div class="stat"><span class="stat-value" id="c-events">0</span><span class="stat-label">timeline events</span></div>
+            <div class="stat"><span class="stat-value" id="c-evidence">0</span><span class="stat-label">evidence captures</span></div>
+            <div class="stat"><span class="stat-value" id="c-kits">0</span><span class="stat-label">kit analyses</span></div>
+            <div class="stat"><span class="stat-value" id="c-ran">0</span><span class="stat-label">providers ran</span></div>
+            <div class="stat"><span class="stat-value" id="c-skipped">0</span><span class="stat-label">providers skipped</span></div>
+          </div>
+
+          <div class="overview-columns">
+            <div class="subpanel">
+              <div class="subpanel-head"><h3>Earliest observed</h3><span id="earliest-badge" class="badge">earliest observed</span></div>
+              <p id="earliest-text" class="earliest">No dated evidence yet. Absence is not proof of non-existence.</p>
+              <p id="headline" class="muted small"></p>
+              <div id="ov-warnings" class="warnings"></div>
+            </div>
+            <div class="subpanel log-panel">
+              <div class="subpanel-head"><h3>Live event log</h3><span id="event-count" class="kicker">0 events</span></div>
+              <ol id="event-log" class="event-log" aria-live="polite"></ol>
+            </div>
+          </div>
+        </section>
+
+        <nav class="tabs" role="tablist" aria-label="Investigation views">
+          <button class="tab active" data-tab="overview" role="tab" aria-selected="true" type="button">Overview</button>
+          <button class="tab" data-tab="graph" role="tab" aria-selected="false" type="button">Graph</button>
+          <button class="tab" data-tab="timeline" role="tab" aria-selected="false" type="button">Timeline</button>
+          <button class="tab" data-tab="sightings" role="tab" aria-selected="false" type="button">Sightings</button>
+          <button class="tab" data-tab="coverage" role="tab" aria-selected="false" type="button">Coverage</button>
+          <button class="tab" data-tab="evidence" role="tab" aria-selected="false" type="button">Evidence</button>
+          <button class="tab" data-tab="kit" role="tab" aria-selected="false" type="button">Kit lab</button>
+        </nav>
+
+        <section class="tab-panel active" id="tab-overview" role="tabpanel">
+          <div class="panel">
+            <div class="panel-head"><h2>Investigation summary</h2><span class="kicker">durable record</span></div>
+            <div id="summary-grid" class="summary-grid"><p class="muted">Waiting for the first result…</p></div>
+            <div class="split">
+              <div>
+                <h3>Coverage at a glance</h3>
+                <div id="coverage-mini" class="coverage-mini"></div>
+              </div>
+              <div>
+                <h3>Timeline precision</h3>
+                <div id="precision-list" class="precision-list"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-graph" role="tabpanel" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Infrastructure &amp; persona graph</h2>
+              <div class="head-actions">
+                <span id="graph-meta" class="kicker"></span>
+                <button id="graph-fit" class="ghost small-btn" type="button">Reset view</button>
+              </div>
+            </div>
+            <p class="muted small">Radial layout: the seed sits at the centre, each ring is one pivot hop. Click a node for its evidence and confidence. Edges are drawn only where a provider returned a recorded observation.</p>
+            <div class="graph-layout">
+              <div id="graph-canvas" class="graph-canvas" tabindex="0" role="region" aria-label="Interactive indicator graph"></div>
+              <aside id="graph-detail" class="graph-detail"><p class="muted small">Select a node to inspect it.</p></aside>
+            </div>
+            <div id="graph-legend" class="legend"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-timeline" role="tabpanel" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>First-seen timeline</h2>
+              <span class="badge">earliest observed</span>
+            </div>
+            <p class="muted small">Dates are the earliest observation PhishTrace could verify. A missing stage means no source in this run produced a dated record — it does not prove the activity never existed.</p>
+            <div id="timeline-summary" class="timeline-summary"></div>
+            <div id="timeline-list" class="timeline-list"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-sightings" role="tabpanel" hidden>
+          <div class="panel">
+            <div class="panel-head"><h2>Social sightings &amp; persona roles</h2><span id="sightings-meta" class="kicker"></span></div>
+            <p class="muted small">Only public posts that matched a seed or a derived selector are shown. Author attribution is a lead, not an identification.</p>
+            <div id="sightings-list" class="sightings-list"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-coverage" role="tabpanel" hidden>
+          <div class="panel">
+            <div class="panel-head"><h2>Provider coverage</h2><span class="kicker">no silent stubs</span></div>
+            <p class="muted small">Every provider is listed with its status and reason. A skipped provider usually means a missing API key or that its selectors did not apply to this seed.</p>
+            <div id="coverage-summary" class="coverage-summary"></div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead><tr><th>Provider</th><th>Category</th><th>Status</th><th>Requests</th><th>Observations</th><th>Duration</th><th>Reason / error</th></tr></thead>
+                <tbody id="coverage-body"></tbody>
+              </table>
+            </div>
+            <div class="split">
+              <div><h3>Stop-list</h3><div id="stoplist" class="muted small"></div></div>
+              <div><h3>Run warnings</h3><div id="coverage-warnings" class="warnings"></div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-evidence" role="tabpanel" hidden>
+          <div class="panel">
+            <div class="panel-head"><h2>Evidence browser</h2><span id="evidence-meta" class="kicker"></span></div>
+            <p class="muted small">Raw captures are stored with a SHA-256 digest. The preview is rendered as text, never as HTML.</p>
+            <div class="evidence-layout">
+              <div id="evidence-list" class="evidence-list"></div>
+              <div class="evidence-preview-wrap">
+                <div class="subpanel-head"><h3 id="evidence-title">Preview</h3><a id="evidence-raw" class="link-btn" href="#" hidden>download raw</a></div>
+                <pre id="evidence-preview" class="evidence-preview">Select an evidence capture.</pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="tab-kit" role="tabpanel" hidden>
+          <div class="panel">
+            <div class="panel-head"><h2>Kit lab</h2><span class="kicker">isolated fetch</span></div>
+            <p class="muted small">Static analysis of a confirmed phishing page or archive. Active fetching must be enabled in config; private, loopback and link-local destinations are refused by the fetcher.</p>
+            <form id="kit-form" class="kit-form" autocomplete="off">
+              <label class="field-label" for="kit-url">Page or archive URL</label>
+              <input id="kit-url" name="url" type="url" maxlength="4096" placeholder="https://suspected-kit.example/login.php" required>
+              <div class="form-row wrap">
+                <label class="check"><input id="kit-force" type="checkbox"> Force (skip hostile-verdict gate)</label>
+                <label class="field-label compact" for="kit-verdict">Verdict</label>
+                <select id="kit-verdict">
+                  <option value="">none</option>
+                  <option value="phishing">phishing</option>
+                  <option value="malicious">malicious</option>
+                  <option value="confirmed">confirmed</option>
+                </select>
+                <button id="kit-btn" class="primary small-btn" type="submit">Analyze kit</button>
+              </div>
+              <p id="kit-error" class="error" role="alert" hidden></p>
+            </form>
+            <div id="kit-result" class="kit-result"></div>
+            <h3>Saved analyses</h3>
+            <div id="kit-list" class="kit-list"><p class="muted small">No kit analyses saved for this investigation.</p></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -88,6 +88,21 @@ class InvestigationRunner:
             config_snapshot=self.config.redacted(),
             owner=owner,
         )
+        return await self.run_existing(seed, investigation, run_sightings=run_sightings)
+
+    async def run_existing(
+        self,
+        seed: NormalizedIndicator,
+        investigation: dict,
+        *,
+        run_sightings: bool = True,
+    ) -> dict:
+        """Run the pivot and post-processing stages for an existing investigation.
+
+        Used by the web console, which creates the investigation row first so the
+        browser can subscribe to live progress before the slow work starts.
+        """
+        self._emit("run.start", investigation_id=investigation["id"], seed=seed.normalized)
         engine = PivotEngine(
             self.config,
             self.registry,
@@ -113,11 +128,17 @@ class InvestigationRunner:
                 summary={"seed": self._seed_summary(seed), "error": _error_text(exc)},
                 error=_error_text(exc),
             )
+            self._emit("run.failed", investigation_id=investigation["id"], error=_error_text(exc))
             raise
+        self._emit("stage.pivot", investigation_id=investigation["id"],
+                   indicators=self.repo.counts(investigation["id"])["indicators"])
         sightings_summary = None
         archive_summary = None
         if run_sightings:
+            self._emit("stage.sightings", investigation_id=investigation["id"])
             sightings_summary, archive_summary = await self._post_stages(engine, seed)
+            self._emit("stage.archive", investigation_id=investigation["id"],
+                       archived=(archive_summary or {}).get("archived", 0))
         counts = self.repo.counts(investigation["id"])
         coverage = engine.coverage()
         timeline = TimelineMerger(self.repo, investigation["id"]).build()
@@ -157,6 +178,7 @@ class InvestigationRunner:
             stats=stats.as_dict(),
             summary=summary,
         )
+        self._emit("run.finalized", investigation_id=investigation["id"], status=status)
         current = self.repo.get_investigation(investigation["id"]) or investigation
         return self._result(current, reused=False, counts=counts, coverage=coverage, warnings=warnings)
 
@@ -214,6 +236,15 @@ class InvestigationRunner:
         return asyncio.run(self.run_seed(raw_seed, **kwargs))
 
     # -------------------------------------------------------------------- helpers
+    def _emit(self, event: str, **payload) -> None:
+        """Publish a lifecycle event without letting a UI callback break the run."""
+        if not self.progress:
+            return
+        try:
+            self.progress({"event": event, "at": iso(utcnow()), **payload})
+        except Exception:  # noqa: BLE001 - progress reporting is best effort
+            pass
+
     @staticmethod
     def _seed_summary(seed: NormalizedIndicator) -> dict:
         return {

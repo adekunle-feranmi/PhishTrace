@@ -15,7 +15,7 @@ sandbox, Node not required, no outbound network needed for the test suite.
 | 3 | Pivot engine, stop-lists, scoring, caps, orchestrator | done |
 | 4 | Timeline merger, sightings, role classifier, archiver | done |
 | 5 | Isolated fetcher + kit analyzer + mock kit | done |
-| 6 | Web UI (live progress, graph, timeline, evidence browser) | pending |
+| 6 | Web UI (live progress, graph, timeline, evidence browser) | done |
 | 7 | Reports (HTML/PDF/JSON/STIX/MD/CSV), abuse reports, OpenCTI/MISP | pending |
 | 8 | Phase B keyed providers and Phase C wrapped tools | pending |
 | 9 | Hardening review, load test, docs, Docker, systemd | pending |
@@ -324,6 +324,70 @@ Bugs found and fixed while testing:
   file suffix, so disclosed source and open logs are classified correctly.
 
 Verification: `153 passed` (phases 1–5).
+
+## Phase 6 — live console
+
+Delivered:
+
+* `phishtrace/api/runs.py` — `RunManager`, an in-process supervisor for console
+  runs. Each investigation gets a replayable event deque with a monotonic
+  cursor, an `RLock`, a daemon worker thread and a cloned provider registry, so
+  a run started from HTTP cannot block the event loop or mutate shared provider
+  circuit-breaker state. `snapshot()` and `wait()` back both tests and the
+  progress endpoints. Durable state stays in SQLite; the manager is only the
+  live transport.
+* `phishtrace/core/orchestrator.py` — `run_existing()` split out of `run_seed()`
+  so an API-created investigation can be executed by the manager. Added
+  `run.start`, stage, and `run.finalized` progress events alongside the pivot
+  engine's `node.*`, `provider.done` and `run.complete` events. The finalized
+  summary now embeds the merged timeline (earliest observed, per-stage
+  earliest, event count, precision, gaps and wording) plus sightings, archive
+  counters and warnings.
+* `phishtrace/api/routes.py` — `POST /api/investigations` (normalized seed,
+  explicit or auto-detected kind, length cap, optional reuse of the latest
+  completed/partial run, CSRF enforced when auth is on), replayable
+  `GET /api/investigations/{id}/progress?after=N`, SSE
+  `GET /api/investigations/{id}/progress/stream` with `no-store` and
+  `X-Accel-Buffering: no`, kit-lab `POST /api/investigations/{id}/kit` (gated on
+  `fetcher.active_fetch`, persisted through `add_kit`), `GET .../kits`, merged
+  timeline output, and `/api/stats`.
+* Console UI (`phishtrace/ui/index.html`, `static/app.js`, `static/style.css`):
+  seed launcher with type override and sightings toggle, investigation sidebar,
+  headline counters, "earliest observed" card, replaying live event log with
+  polling fallback when SSE is unavailable, radial SVG infrastructure/persona
+  graph with per-node inspector, merged first-seen timeline with precision and
+  gaps, sightings list, provider coverage with ran/skipped/failed reasons and
+  stop-list counts, evidence browser with safe text preview and raw download,
+  and kit-lab run/history views. Every API/provider value is inserted with
+  `textContent` or DOM properties; links are restricted to http(s) and carry
+  `rel="noopener noreferrer"`; no token, cookie or password is written to the
+  DOM or logs.
+* `phishtrace/tests/test_phase6_ui.py` — 8 tests with a deterministic fixture
+  provider: page/asset rendering, start + progress + reuse idempotency, invalid
+  seed/kind, terminal SSE replay, sightings/evidence preview and raw download,
+  kit gate, auth + CSRF + ownership, and static UI security checks.
+
+Bugs found and fixed while testing:
+
+* The UI security test searched for the literal `innerHTML` and tripped on the
+  file's own safety comment; the assertion now looks for actual assignment
+  (`.innerHTML =`) so it tests behaviour instead of prose.
+* A sighting inserted by the API test used an ISO string for `posted_at` and hit
+  SQLAlchemy's `DateTime` type; it now passes an aware `datetime`.
+* Coverage row severity classes did not match the CSS (`good`/`warn`/`bad` vs
+  `ran`/`skipped`/`failed`), leaving counts unstyled; classes now match.
+
+Verification: `161 passed` (phases 1–6), 1 third-party Starlette/httpx
+ deprecation warning. Browser smoke: real console served on loopback with the
+ fixture provider, a UI-started run completed, graph/timeline/coverage/evidence
+ tabs rendered at 1600x1000, no page errors and no console errors. All API tests
+ use FastAPI's TestClient; no network provider was contacted.
+
+Known limits: the live event deque is in memory, so after a server restart a
+ run's progress is gone but its durable record, coverage and timeline remain in
+ SQLite; SSE reconnects replay from the `after` cursor, and the JS falls back to
+ polling. The archiver/sightings path was not exercised in this phase's UI smoke
+ (`run_sightings=False`); it is covered by phase 4 tests.
 
 ## Known limitations (tracked, not hidden)
 
