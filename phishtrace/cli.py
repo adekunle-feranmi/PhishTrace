@@ -118,6 +118,17 @@ def cmd_run(args) -> int:
         print(f"Truncated     : {stats['truncated']}")
     if stats.get("stoplist_hits"):
         print(f"Stop-list     : {stats['stoplist_hits']} context-only node(s)")
+    timeline = (result.get("investigation") or {}).get("summary", {}).get("timeline") or {}
+    if timeline.get("earliest_observed"):
+        print(
+            f"Earliest obs. : {timeline['earliest_observed']} "
+            f"({timeline.get('earliest_stage') or 'unknown stage'}) - {timeline.get('earliest_label') or ''}".rstrip()
+        )
+    sightings_stage = (result.get("investigation") or {}).get("summary", {}).get("sightings") or {}
+    if sightings_stage.get("collected"):
+        kept = sightings_stage.get("stored", 0)
+        capped = " (capped)" if sightings_stage.get("capped") else ""
+        print(f"Social        : {kept}/{sightings_stage['collected']} collected kept{capped}")
     coverage = result.get("coverage") or {}
     print(f"Providers ran : {', '.join(coverage.get('ran') or []) or 'none'}")
     if result.get("failed"):

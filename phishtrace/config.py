@@ -127,6 +127,22 @@ class FetcherConfig(BaseModel):
     max_assets: int = 25
 
 
+class ArchiverConfig(BaseModel):
+    """Snapshot policy for posts and pages referenced by an investigation.
+
+    ``save_page_now`` is off by default: it asks the Internet Archive to fetch
+    attacker infrastructure on our behalf and is rate-limited upstream. The
+    lookup path (existing snapshots only) is always safe and always on.
+    """
+
+    enabled: bool = True
+    save_page_now: bool = False
+    max_snapshots: int = 20
+    timeout: float = 20.0
+    lookup_existing: bool = True
+    local_snapshot: bool = True
+
+
 class ProviderSettings(BaseModel):
     enabled: bool = True
     weight: float = 1.0
@@ -153,6 +169,7 @@ class Config(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     fetcher: FetcherConfig = Field(default_factory=FetcherConfig)
+    archiver: ArchiverConfig = Field(default_factory=ArchiverConfig)
     providers: dict[str, ProviderSettings] = Field(default_factory=dict)
     stoplists: dict[str, str] = Field(default_factory=dict)
     default_region: str = "US"  # ISO-3166 alpha-2 fallback for phone numbers without a country code

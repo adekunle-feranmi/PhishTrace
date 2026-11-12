@@ -13,7 +13,7 @@ sandbox, Node not required, no outbound network needed for the test suite.
 | 1 | Skeleton, config, models, storage, auth, HTTP layer, registry, health API, CLI | done |
 | 2 | Normalizer + keyless providers + mocked-transport tests | done |
 | 3 | Pivot engine, stop-lists, scoring, caps, orchestrator | done |
-| 4 | Timeline merger, sightings, role classifier, archiver | pending |
+| 4 | Timeline merger, sightings, role classifier, archiver | done |
 | 5 | Isolated fetcher + kit analyzer + mock kit | pending |
 | 6 | Web UI (live progress, graph, timeline, evidence browser) | pending |
 | 7 | Reports (HTML/PDF/JSON/STIX/MD/CSV), abuse reports, OpenCTI/MISP | pending |
@@ -184,6 +184,81 @@ budget 40 requests, depth 1, 40 nodes, 90 s timeout):
   `ran` with warnings carrying the reason; the investigation still finishes.
 
 Verification: `98 passed` (phases 1–3).
+
+## Phase 4 — timeline merger, sightings engine, role classifier, archiver
+
+Added:
+
+* `phishtrace/core/timeline.py` — merges every dated observation into one
+  chronological timeline. `stage_for()` maps a selector type to a human stage
+  (`registration`, `certificate`, `archive`, `social`, `feed`, `infrastructure`,
+  `resolution`, ...); `merge_events()` collapses rows that describe the same fact
+  on the same day into a single event carrying a `sources` list and a `collapsed`
+  count, so five feeds repeating one first-seen date do not produce five bars.
+  `build_timeline()` returns `earliest_observed`, per-stage earliest dates,
+  gaps (configurable `gap_days`, default 30) with day counts, per-event
+  precision (`exact` for timestamps, `day` for date-only evidence), coverage of
+  the anchors that were actually checked, and fixed "earliest observed" wording.
+  `TimelineMerger(repo, investigation_id).build()` reads the database directly;
+  `derive_events_from_sightings()` turns stored social posts into timeline events.
+* `phishtrace/core/roles.py` — heuristic role classifier for handles seen in the
+  sightings stage. Roles: `victim_reporting`, `researcher`, `threat_actor`,
+  `distributor`, `amplifier`, `brand`, `unknown`. Signals are multilingual
+  (English, French, Spanish, Portuguese, German, Indonesian, Nigerian pidgin and
+  common phishing slang), scored with weights and returned with confidence and a
+  rationale string per handle, plus `summarize_roles()` for the summary block.
+* `phishtrace/core/sightings.py` — `SightingsEngine.collect(seed, variants)`.
+  Runs only providers that implement `sightings()` (`supports_sightings` and not
+  `emits`), each with its own timeout, rate-limit bucket, request budget and
+  `EvidenceRecorder`, so a slow or hostile platform cannot starve the run. Caps
+  output to `limits.max_sightings`, keeps the earliest posts, de-duplicates on
+  `(platform, post_id)` so re-runs add nothing, persists via `repo.add_sighting`
+  and `repo.record_provider_run(extra={"stage": "sightings"})`, and returns a
+  `SightingsSummary` with collected/stored/suppressed counts, providers run /
+  skipped / failed, platforms, role counts, earliest observed per platform,
+  warnings and duration.
+* `phishtrace/core/archiver.py` — `Archiver` resolves Wayback Machine
+  availability per URL (`status` = `existing` / `unavailable`), optionally stores
+  a gzip, content-addressed local snapshot (requires `fetcher.active_fetch`, i.e.
+  the SSRF-guarded fetcher), records every lookup as evidence, and
+  `archive_sightings()` writes `archive_snapshot_url` back onto stored sightings.
+* `phishtrace/core/pivot.py` — added `note_external_run(provider, requests=...,
+  duration_ms=..., error=..., stage=...)` so providers driven outside the engine
+  still appear in `coverage()` with the right status and an explicit `stage`
+  field, instead of being mislabelled as skipped.
+* `phishtrace/core/orchestrator.py` — new `_post_stages()` runs after pivoting:
+  sightings collection, external-run accounting, social timeline derivation and
+  optional archiving. The investigation summary now carries `sightings`,
+  `archive` and `timeline` (`earliest_observed`, `earliest_label`, per-stage
+  dates, `event_count`, `precision`, `wording`), warnings are truncated to 50
+  entries before finalisation, and `coverage["timeline"]` reports anchor coverage.
+* `phishtrace/cli.py` — prints the earliest-observed line and a `Social` stage
+  line (collected vs kept, capped marker) in addition to the existing counters.
+* `phishtrace/tests/test_phase4_timeline.py` — 34 tests.
+
+Behaviours proven by tests:
+
+* Same-day, same-fact events collapse into one entry with a `sources` list and
+  the correct `collapsed` count; distinct stages on the same day stay separate.
+* Timeline gaps are detected with a configurable threshold, and gap arithmetic
+  uses real day deltas (Jan 1 to Mar 10 = 69 days).
+* Date-only evidence is marked `precision="day"`; timestamped evidence is
+  `"exact"`; `earliest_observed` is always the minimum across stages.
+* Social posts become timeline events at the `social` stage and participate in
+  the earliest-observed calculation.
+* Role classification separates victim reports, researchers and actors, returns
+  confidence and rationale, and `summarize_roles()` counts only stored posts.
+* The sightings engine caps to `max_sightings`, keeps the earliest posts,
+  de-duplicates on re-run (zero new rows), isolates per-provider failures, and
+  records `stage="sightings"` provider runs.
+* `note_external_run()` flips a provider from skipped to ran/failed in coverage.
+* The archiver records a Wayback lookup as evidence and marks unavailable URLs.
+
+Fixes made while writing these tests: `ProviderContext` exposes `sighting()`, not
+`sight()`; timeline events must convert `occurred_at` with `parse_timestamp`
+before reaching SQLAlchemy; role counts must be based on stored (capped) posts.
+
+Verification: `132 passed` (phases 1–4).
 
 ## Known limitations (tracked, not hidden)
 

@@ -12,11 +12,14 @@ import time
 from typing import Callable
 
 from phishtrace.config import Config
+from phishtrace.core.archiver import Archiver
 from phishtrace.core.http import ProviderHTTP, make_client
 from phishtrace.core.limits import Budget, RateLimiter
 from phishtrace.core.pivot import PivotEngine
 from phishtrace.core.registry import Registry
+from phishtrace.core.sightings import SightingsEngine
 from phishtrace.core.stoplist import StopList
+from phishtrace.core.timeline import TimelineMerger, derive_events_from_sightings
 from phishtrace.models import NormalizedIndicator, iso, utcnow
 from phishtrace.normalizer import normalize_indicator
 from phishtrace.providers.context import ProviderContext
@@ -111,9 +114,41 @@ class InvestigationRunner:
                 error=_error_text(exc),
             )
             raise
+        sightings_summary = None
+        archive_summary = None
+        if run_sightings:
+            sightings_summary, archive_summary = await self._post_stages(engine, seed)
         counts = self.repo.counts(investigation["id"])
         coverage = engine.coverage()
+        timeline = TimelineMerger(self.repo, investigation["id"]).build()
+        coverage["timeline"] = timeline.coverage
         summary = self._summary(seed, counts, engine, coverage, int((time.monotonic() - started) * 1000))
+        summary["timeline"] = {
+            "earliest_observed": (timeline.earliest_observed or {}).get("occurred_at"),
+            "earliest_label": (timeline.earliest_observed or {}).get("label"),
+            "earliest_stage": (timeline.earliest_observed or {}).get("stage"),
+            "stages": {stage: bucket.get("earliest_observed") for stage, bucket in timeline.stages.items()},
+            "event_count": len(timeline.rows),
+            "precision": timeline.precision,
+            "gaps": timeline.gaps[:10],
+            "wording": timeline.wording,
+        }
+        if sightings_summary is not None:
+            summary["sightings"] = sightings_summary.as_dict()
+        if archive_summary is not None:
+            summary["archive"] = {
+                "requested": archive_summary.get("requested", 0),
+                "archived": archive_summary.get("archived", 0),
+                "existing": archive_summary.get("existing", 0),
+                "unavailable": archive_summary.get("unavailable", 0),
+                "errors": archive_summary.get("errors", 0),
+            }
+        warnings = list(engine.warnings)
+        for extra in ((sightings_summary.warnings if sightings_summary else []) +
+                      (archive_summary.get("warnings", []) if archive_summary else [])):
+            if extra not in warnings:
+                warnings.append(extra)
+        summary["warnings"] = warnings[:50]
         status = "partial" if stats.truncated else "completed"
         self.repo.finalize(
             investigation["id"],
@@ -123,7 +158,56 @@ class InvestigationRunner:
             summary=summary,
         )
         current = self.repo.get_investigation(investigation["id"]) or investigation
-        return self._result(current, reused=False, counts=counts, coverage=coverage, warnings=engine.warnings)
+        return self._result(current, reused=False, counts=counts, coverage=coverage, warnings=warnings)
+
+    async def _post_stages(self, engine: PivotEngine, seed: NormalizedIndicator):
+        """Run the stages that depend on a finished pivot: sightings, archive, roles."""
+        sightings_engine = SightingsEngine(
+            self.config,
+            self.registry,
+            self.repo,
+            engine.investigation_id,
+            transport=self.transport,
+            logger=self.logger,
+            max_concurrency=self.max_provider_concurrency,
+        )
+        sightings = await sightings_engine.collect(seed, variants=seed.variants)
+        for name in sightings.providers_ran:
+            status = self.registry.status(name)
+            engine.note_external_run(
+                name,
+                requests=int(getattr(status, "requests", 0) or 0),
+                stage="sightings",
+            )
+        for item in sightings.providers_failed:
+            engine.note_external_run(
+                item["provider"], error=item.get("reason") or "sighting provider failed", stage="sightings"
+            )
+
+        stored = self.repo.list_sightings(engine.investigation_id)
+        for event in derive_events_from_sightings(stored):
+            try:
+                self.repo.add_event(engine.investigation_id, event)
+            except Exception:  # noqa: BLE001 - timeline enrichment must not fail a run
+                pass
+
+        archive_summary = None
+        if self.config.archiver.enabled and getattr(self.config.limits, "archive_sightings", True) and stored:
+            archiver = Archiver(
+                self.config,
+                self.repo,
+                engine.investigation_id,
+                transport=self.transport,
+                fetcher=self.fetcher,
+                logger=self.logger,
+            )
+            try:
+                archive_summary = await archiver.archive_sightings(
+                    stored, limit=min(len(stored), int(self.config.archiver.max_snapshots))
+                )
+            except Exception as exc:  # noqa: BLE001
+                archive_summary = {"warnings": [f"archiver failed: {type(exc).__name__}: {exc}"[:300]]}
+        return sightings, archive_summary
 
     def run_seed_sync(self, raw_seed: str, **kwargs) -> dict:
         """Small convenience wrapper for scripts and tests."""

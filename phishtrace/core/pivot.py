@@ -797,6 +797,31 @@ class PivotEngine:
             pass
 
     # ------------------------------------------------------------------- coverage
+    def note_external_run(
+        self,
+        provider: str,
+        *,
+        requests: int = 0,
+        observations: int = 0,
+        duration_ms: int = 0,
+        error: str | None = None,
+        stage: str = "sightings",
+    ) -> None:
+        """Register work done outside the pivot loop (sightings, archiving).
+
+        Without this, a social provider that ran during the sightings stage
+        would be reported as "not applicable" simply because the pivot engine
+        never called it. Coverage must reflect what actually ran.
+        """
+        activity = self.activity[provider]
+        activity["requests"] += int(requests)
+        activity["observations"] += int(observations)
+        activity["duration_ms"] += int(duration_ms)
+        activity["status"] = "failed" if error else "ran"
+        activity["stage"] = stage
+        if error and error not in activity["errors"]:
+            activity["errors"].append(error)
+
     def coverage(self) -> dict:
         """Coverage for *this run*, merged with static availability."""
         providers: list[dict] = []
@@ -815,6 +840,8 @@ class PivotEngine:
                 })
                 if activity["errors"]:
                     entry["error"] = activity["errors"][0]
+                if activity.get("stage"):
+                    entry["stage"] = activity["stage"]
             if entry["status"] == "failed":
                 failed.append({"provider": status.name, "reason": entry.get("error") or status.reason})
             elif entry["status"] == "skipped":
