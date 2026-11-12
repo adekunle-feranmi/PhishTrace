@@ -35,6 +35,9 @@ def discover_providers(errors: list[ProviderLoadError] | None = None) -> list[ty
                 continue
             if obj.__module__ != module.__name__:
                 continue
+            if obj.__name__.startswith("_"):
+                # Private helper base classes (e.g. _BulkFeedProvider) are not plugins.
+                continue
             meta = getattr(obj, "meta", None)
             if meta is None:
                 if errors is not None:
