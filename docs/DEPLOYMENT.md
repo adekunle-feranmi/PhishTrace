@@ -27,6 +27,18 @@ The eight Phase C tools (`dnstwist`, `theHarvester`, `sherlock`, `maigret`,
 ones you need; providers whose binary or credential is absent are reported as
 skipped rather than failing an investigation.
 
+### SpiderFoot
+
+SpiderFoot is not published on PyPI, so it is deployed from a source checkout.
+The runner starts `options.path` directly and cannot launch a `.cmd`/`.bat`
+shim, so point `path` at a real executable - on Windows the easiest route is a
+throwaway venv plus a one-line console-script wrapper that `chdir`s into the
+checkout and executes `sf.py`.
+
+Pin `netaddr<1`: 1.x dropped `IPAddress.is_private()`, which `sflib` calls
+during target validation. Keep `sfp_crt` out of `options.modules`; that module
+waits indefinitely on crt.sh and will burn the whole provider timeout.
+
 ## 2. Install from source
 
 ```bash

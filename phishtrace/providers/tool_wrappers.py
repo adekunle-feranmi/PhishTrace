@@ -515,10 +515,17 @@ class SpiderfootProvider(_ToolProvider):
         counts: dict[str, int] = {}
         rows = csv.reader(io.StringIO(result.stdout))
         for row in rows:
-            if len(row) < 2:
+            # SpiderFoot's stdout writer emits ``module,type,source,data``.
+            # Older shapes (``type,value`` or ``type,value,source``) are still
+            # accepted so hand-built fixtures keep working.
+            if len(row) >= 4 and text(row[0]).startswith("sfp_"):
+                kind = _SPIDERFOOT_TYPES.get(text(row[1]).lower())
+                value = text(",".join(row[3:]))
+            elif len(row) >= 2:
+                kind = _SPIDERFOOT_TYPES.get(text(row[0]).lower())
+                value = text(row[1])
+            else:
                 continue
-            kind = _SPIDERFOOT_TYPES.get(text(row[0]).lower())
-            value = text(row[1])
             if not kind or not value:
                 continue
             if kind == "domain":

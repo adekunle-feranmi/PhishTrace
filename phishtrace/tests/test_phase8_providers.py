@@ -820,6 +820,24 @@ async def test_spiderfoot_maps_csv_findings(tmp_path):
     assert bitcoin.context_only is True
 
 
+async def test_spiderfoot_maps_real_stdout_layout(tmp_path):
+    """The stock CLI writes module,type,source,data rows, not type-first."""
+    csv_body = """sfp_dnsresolve,IP Address,example.com,203.0.113.101
+sfp_dnsresolve,Domain Name,example.com,mail.evil-login.example
+sfp_crt,Email Address,example.com,analyst@evil-login.example
+sfp_whois,Domain Whois,example.com,   Domain Name: EXAMPLE.COM
+SpiderFoot UI,Internet Name,example.com,example.com
+"""
+    script = payload_tool(tmp_path, "spiderfoot", csv_body)
+    run = await run_provider(
+        tmp_path, SpiderfootProvider, SEED_DOMAIN, route({}),
+        options={"path": str(script)},
+    )
+    assert "203.0.113.101" in run.values("ip")
+    assert "mail.evil-login.example" in run.values("domain")
+    assert "analyst@evil-login.example" in run.values("email")
+
+
 async def test_phoneinfoga_extracts_carrier_metadata(tmp_path):
     script = payload_tool(
         tmp_path, "phoneinfoga",
