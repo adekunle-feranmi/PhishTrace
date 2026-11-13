@@ -3,7 +3,9 @@
  * Security rule for this file: every value that came from the API, a provider,
  * a seed or an attacker-controlled page is inserted with textContent / DOM
  * properties. innerHTML is never used for untrusted data. External links are
- * restricted to http(s) and carry rel="noopener noreferrer".
+ * restricted to http(s) and carry rel="noopener noreferrer". The one exception
+ * is the evidence viewer: a stored capture is inert-parsed, stripped of active
+ * content and shown in a fully sandboxed frame - see hardenEvidenceHtml().
  */
 (function () {
   "use strict";
@@ -28,6 +30,8 @@
     evidence: [],
     activeTab: "overview",
     kitReports: [],
+    evidenceDetail: null,
+    evidenceMode: "rendered",
   };
 
   const TYPE_COLORS = {
@@ -1023,23 +1027,160 @@
     });
   }
 
+  const EVIDENCE_KIND_LABEL = {
+    html: "HTML page", json: "JSON", image: "Image", pdf: "PDF", text: "Text", binary: "Binary",
+  };
+
+  function rawEvidenceUrl(id) {
+    return `/api/investigations/${encodeURIComponent(state.id)}/evidence/${encodeURIComponent(id)}/raw`;
+  }
+
+  function setEvidenceMode(mode) {
+    state.evidenceMode = mode === "source" ? "source" : "rendered";
+    $$("#ev-toggle .ev-mode").forEach((button) => {
+      const active = button.dataset.mode === state.evidenceMode;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    renderEvidenceBody();
+  }
+
+  function evidenceHeader(detail) {
+    return `${detail.provider || "provider"} · HTTP ${detail.status_code || "—"} · ${fmtBytes(detail.size_bytes)} · sha256 ${detail.sha256 || "—"}\n${detail.url || ""}\n\n`;
+  }
+
+  /* The single place where the console hands untrusted markup to the browser.
+   *
+   * The capture is parsed inertly with DOMParser (which neither runs scripts
+   * nor loads resources), stripped of anything active, and injected into a
+   * frame with sandbox="" - an opaque origin with no scripts, forms or
+   * top-level navigation - plus a policy that forbids every network fetch.
+   * A hostile page therefore cannot beacon, frame or redirect anywhere, and
+   * inline handlers are inert because scripts never execute. Layout comes
+   * from the capture's own <style> blocks and attributes only.
+   */
+  function hardenEvidenceHtml(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    doc.querySelectorAll("script, iframe, frame, frameset, object, embed, applet, base, link, meta").forEach((node) => node.remove());
+    const policy = doc.createElement("meta");
+    policy.setAttribute("http-equiv", "Content-Security-Policy");
+    policy.setAttribute("content", "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; media-src data:; form-action 'none'; base-uri 'none'");
+    const head = doc.head || doc.documentElement.insertBefore(doc.createElement("head"), doc.documentElement.firstChild);
+    head.insertBefore(policy, head.firstChild);
+    const css = doc.createElement("style");
+    css.textContent = "a{pointer-events:none!important}";
+    head.appendChild(css);
+    return "<!doctype html>\n" + doc.documentElement.outerHTML;
+  }
+
+  function evidenceFrame(detail) {
+    const frame = el("iframe", {
+      class: "evidence-frame",
+      title: "Rendered evidence capture",
+      attrs: { sandbox: "", referrerpolicy: "no-referrer" },
+    });
+    frame.srcdoc = hardenEvidenceHtml(detail.preview || "");
+    return el("div", { class: "evidence-frame-wrap" },
+      frame,
+      el("p", { class: "muted tiny", text: "Rendered offline from the stored capture: scripts, frames, forms and network requests are blocked, so layout may differ from the original page." }));
+  }
+
+  function jsonValueNode(value, key) {
+    const label = key === null ? null : el("span", { class: "json-key", text: key });
+    if (value === null) return el("div", { class: "json-row" }, label, el("span", { class: "json-null", text: "null" }));
+    if (Array.isArray(value)) return jsonBranchNode(value, key, `${value.length} item${value.length === 1 ? "" : "s"}`);
+    if (typeof value === "object") {
+      const keys = Object.keys(value);
+      return jsonBranchNode(value, key, `${keys.length} key${keys.length === 1 ? "" : "s"}`);
+    }
+    return el("div", { class: "json-row" }, label, el("span", { class: `json-${typeof value}`, text: JSON.stringify(value) }));
+  }
+
+  function jsonBranchNode(value, key, summary) {
+    const children = Array.isArray(value)
+      ? value.map((item, index) => jsonValueNode(item, String(index)))
+      : Object.keys(value).map((name) => jsonValueNode(value[name], name));
+    return el("details", { class: "json-branch", open: true },
+      el("summary", {},
+        key === null ? null : el("span", { class: "json-key", text: key }),
+        el("span", { class: "json-count", text: summary })),
+      el("div", { class: "json-children" }, children));
+  }
+
+  function evidenceJson(capture) {
+    let parsed;
+    try {
+      parsed = JSON.parse(capture);
+    } catch (error) {
+      return el("pre", { class: "evidence-preview", text: capture });
+    }
+    if (capture.length > 20000) {
+      return el("pre", { class: "evidence-preview", text: JSON.stringify(parsed, null, 2) });
+    }
+    return el("div", { class: "evidence-json" }, jsonValueNode(parsed, null));
+  }
+
+  function renderEvidenceBody() {
+    const view = $("#evidence-view");
+    const detail = state.evidenceDetail;
+    if (!view || !detail) return;
+    clear(view);
+    const kind = detail.kind || "text";
+    if (state.evidenceMode === "source") {
+      view.appendChild(el("pre", { class: "evidence-preview", text: evidenceHeader(detail) + (detail.preview || "(empty capture)") }));
+      return;
+    }
+    if (kind === "html") { view.appendChild(evidenceFrame(detail)); return; }
+    if (kind === "json") { view.appendChild(evidenceJson(detail.preview || "")); return; }
+    if (kind === "image") { view.appendChild(el("img", { class: "evidence-image", src: rawEvidenceUrl(detail.id), alt: "Evidence capture" })); return; }
+    if (kind === "pdf") { view.appendChild(el("iframe", { class: "evidence-frame", title: "Evidence PDF", src: rawEvidenceUrl(detail.id) })); return; }
+    if (kind === "binary") {
+      view.appendChild(el("p", { class: "muted small", text: "This capture is binary; use \"download raw\" to inspect it." }));
+      return;
+    }
+    view.appendChild(el("pre", { class: "evidence-preview", text: detail.preview || "(empty capture)" }));
+  }
+
+  function renderEvidenceMeta(detail) {
+    const bar = $("#evidence-meta-bar");
+    if (!bar) return;
+    clear(bar);
+    [
+      EVIDENCE_KIND_LABEL[detail.kind] || "Capture",
+      `HTTP ${detail.status_code || "—"}`,
+      fmtBytes(detail.size_bytes),
+      `sha256 ${(detail.sha256 || "—").slice(0, 16)}…`,
+      detail.provider || "provider",
+    ].forEach((chip) => bar.appendChild(el("span", { class: "ev-chip", text: chip })));
+    if (detail.preview_truncated) {
+      bar.appendChild(el("span", { class: "ev-chip ev-chip-warn", text: `preview limited to ${fmtBytes(detail.preview_limit || 100000)}` }));
+    }
+    bar.hidden = false;
+  }
+
   async function selectEvidence(row, button) {
     $$(".evidence-item").forEach((item) => item.classList.remove("active"));
     if (button) button.classList.add("active");
-    const preview = $("#evidence-preview");
     const title = $("#evidence-title");
     const raw = $("#evidence-raw");
+    const view = $("#evidence-view");
+    const toggle = $("#ev-toggle");
+    const bar = $("#evidence-meta-bar");
     if (title) title.textContent = row.url || "Evidence capture";
-    if (raw) { raw.href = `/api/investigations/${encodeURIComponent(state.id)}/evidence/${encodeURIComponent(row.id)}/raw`; raw.hidden = false; }
-    if (preview) preview.textContent = "Loading preview…";
+    if (raw) { raw.href = rawEvidenceUrl(row.id); raw.hidden = false; }
+    if (toggle) toggle.hidden = true;
+    if (bar) bar.hidden = true;
+    if (view) { clear(view); view.appendChild(el("p", { class: "muted small", text: "Loading preview…" })); }
+    state.evidenceDetail = null;
+    state.evidenceMode = "rendered";
     try {
       const detail = await api(`/api/investigations/${encodeURIComponent(state.id)}/evidence/${encodeURIComponent(row.id)}`);
-      if (!preview) return;
-      preview.textContent = detail.preview || "(empty capture)";
-      const header = `${row.provider || "provider"} · HTTP ${row.status_code || "—"} · ${fmtBytes(row.size_bytes)} · sha256 ${row.sha256 || "—"}\n${row.url || ""}\n\n`;
-      preview.textContent = header + (detail.preview || "(empty capture)");
+      state.evidenceDetail = detail;
+      if (toggle) toggle.hidden = false;
+      setEvidenceMode("rendered");
+      renderEvidenceMeta(detail);
     } catch (error) {
-      if (preview) preview.textContent = `Could not load evidence: ${error.message}`;
+      if (view) { clear(view); view.appendChild(el("p", { class: "small", text: `Could not load evidence: ${error.message}` })); }
     }
   }
 

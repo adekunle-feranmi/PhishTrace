@@ -230,12 +230,22 @@
         <section class="tab-panel" id="tab-evidence" role="tabpanel" hidden>
           <div class="panel">
             <div class="panel-head"><h2>Evidence browser</h2><span id="evidence-meta" class="kicker"></span></div>
-            <p class="muted small">Raw captures are stored with a SHA-256 digest. The preview is rendered as text, never as HTML.</p>
+            <p class="muted small">Raw captures are stored with a SHA-256 digest. HTML is rendered offline in a fully sandboxed frame with scripts, forms and network access blocked; JSON opens as a tree, images and PDFs natively. Switch to <em>Source</em> for the original bytes.</p>
             <div class="evidence-layout">
               <div id="evidence-list" class="evidence-list"></div>
               <div class="evidence-preview-wrap">
-                <div class="subpanel-head"><h3 id="evidence-title">Preview</h3><a id="evidence-raw" class="link-btn" href="#" hidden>download raw</a></div>
-                <pre id="evidence-preview" class="evidence-preview">Select an evidence capture.</pre>
+                <div class="subpanel-head">
+                  <h3 id="evidence-title">Preview</h3>
+                  <div class="ev-actions">
+                    <div id="ev-toggle" class="ev-toggle" role="group" aria-label="Evidence view" hidden>
+                      <button class="ev-mode is-active" type="button" data-mode="rendered" aria-pressed="true">Rendered</button>
+                      <button class="ev-mode" type="button" data-mode="source" aria-pressed="false">Source</button>
+                    </div>
+                    <a id="evidence-raw" class="link-btn" href="#" hidden>download raw</a>
+                  </div>
+                </div>
+                <div id="evidence-meta-bar" class="ev-meta" hidden></div>
+                <div id="evidence-view" class="evidence-view"><p class="muted small">Select an evidence capture.</p></div>
               </div>
             </div>
           </div>

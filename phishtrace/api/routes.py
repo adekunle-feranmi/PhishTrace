@@ -25,6 +25,7 @@ from phishtrace.api.auth import require_csrf
 from phishtrace.api.deps import current_user
 from phishtrace.api.runs import TERMINAL_STATUSES, RunError
 from phishtrace.core.timeline import TimelineMerger
+from phishtrace.evidence_preview import PREVIEW_LIMIT, classify_evidence
 from phishtrace.models import iso
 from phishtrace.normalizer import normalize_indicator, refang
 from phishtrace.reports import (
@@ -423,10 +424,22 @@ def evidence_detail(request: Request, investigation_id: str, evidence_id: str,
     preview = ""
     if repo.evidence_store:
         try:
-            preview = repo.evidence_store.read_text(str(_confined_evidence_path(request, row["raw_response_path"])), limit=100_000)
+            preview = repo.evidence_store.read_text(
+                str(_confined_evidence_path(request, row["raw_response_path"])), limit=PREVIEW_LIMIT
+            )
         except OSError:
             preview = "[evidence file missing]"
-    return {**row, "preview": preview}
+    # The console renders HTML in a sandboxed frame, JSON as a tree and images
+    # natively; it needs the classification to pick the right viewer.
+    kind = classify_evidence(row.get("content_type"), preview[:4096])
+    truncated = bool(row.get("size_bytes") and row["size_bytes"] > PREVIEW_LIMIT)
+    return {
+        **row,
+        "preview": preview,
+        "kind": kind,
+        "preview_truncated": truncated,
+        "preview_limit": PREVIEW_LIMIT,
+    }
 
 
 @router.get("/investigations/{investigation_id}/evidence/{evidence_id}/raw")

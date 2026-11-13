@@ -256,6 +256,11 @@ def test_sightings_evidence_preview_and_raw_download(tmp_path):
         ).json()
         assert "fixture capture" in detail["preview"]
         assert detail["raw_response_path"] == row["raw_response_path"]
+        # The console renders HTML in a sandboxed frame, so the API has to say
+        # what the capture is instead of leaving the client to guess.
+        assert detail["kind"] == "html"
+        assert detail["preview_truncated"] is False
+        assert detail["preview_limit"] == 100_000
 
         raw = client.get(f"/api/investigations/{investigation['id']}/evidence/{row['id']}/raw")
         assert raw.status_code == 200
