@@ -65,3 +65,14 @@ def test_binary_body_is_not_rendered_as_markup():
 def test_preview_limit_is_usable():
     assert PREVIEW_LIMIT >= 50_000
     assert {"html", "json", "image", "pdf", "text", "binary"} == set(KINDS)
+
+
+def test_html_preview_budget_covers_inline_stylesheets():
+    """A page's first 100 KB is usually CSS; cutting there blanks the frame."""
+    from phishtrace.evidence_preview import HTML_PREVIEW_LIMIT, preview_limit_for
+
+    assert HTML_PREVIEW_LIMIT > PREVIEW_LIMIT
+    assert preview_limit_for("text/html; charset=utf-8") == HTML_PREVIEW_LIMIT
+    assert preview_limit_for("application/xhtml+xml") == HTML_PREVIEW_LIMIT
+    assert preview_limit_for("application/json") == PREVIEW_LIMIT
+    assert preview_limit_for(None) == PREVIEW_LIMIT

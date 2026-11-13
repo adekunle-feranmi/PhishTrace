@@ -22,6 +22,13 @@ import re
 #: showing an incomplete page.
 PREVIEW_LIMIT = 100_000
 
+#: HTML gets a far larger budget. A real page carries tens of kilobytes of
+#: inline CSS before the first visible element, so a 100 KB preview routinely
+#: stops inside a ``<style>`` block and the frame renders blank instead of the
+#: page it is supposed to show. Captures are read from local disk, so the
+#: extra bytes cost nothing on the wire.
+HTML_PREVIEW_LIMIT = 2_000_000
+
 KINDS = ("html", "json", "image", "pdf", "text", "binary")
 
 _HTML_TYPES = {"text/html", "application/xhtml+xml"}
@@ -36,6 +43,11 @@ _JSON_START = re.compile(r'^\s*[\[{]\s*(?:"|[\[\]{}\-0-9]|true\b|false\b|null\b)
 def _media_type(content_type: str | None) -> str:
     """Return the bare media type: ``text/html; charset=utf-8`` -> ``text/html``."""
     return (content_type or "").split(";", 1)[0].strip().lower()
+
+
+def preview_limit_for(content_type: str | None) -> int:
+    """Return the preview byte budget for a capture of this media type."""
+    return HTML_PREVIEW_LIMIT if _media_type(content_type) in _HTML_TYPES else PREVIEW_LIMIT
 
 
 def _looks_like_html(sample: str) -> bool:

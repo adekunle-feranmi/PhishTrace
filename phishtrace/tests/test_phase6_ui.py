@@ -17,6 +17,7 @@ from phishtrace.api.app import create_app
 from phishtrace.api.auth import hash_password
 from phishtrace.config import AuthConfig
 from phishtrace.core.registry import Registry
+from phishtrace.evidence_preview import HTML_PREVIEW_LIMIT
 from phishtrace.providers.base import BaseProvider, ProviderMeta
 from phishtrace.storage.db import init_db
 from phishtrace.storage.evidence import EvidenceStore
@@ -260,7 +261,9 @@ def test_sightings_evidence_preview_and_raw_download(tmp_path):
         # what the capture is instead of leaving the client to guess.
         assert detail["kind"] == "html"
         assert detail["preview_truncated"] is False
-        assert detail["preview_limit"] == 100_000
+        # HTML captures get the larger budget so a page's inline stylesheet
+        # cannot push its visible markup out of the preview.
+        assert detail["preview_limit"] == HTML_PREVIEW_LIMIT
 
         raw = client.get(f"/api/investigations/{investigation['id']}/evidence/{row['id']}/raw")
         assert raw.status_code == 200

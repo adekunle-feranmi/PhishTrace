@@ -243,3 +243,62 @@ are not supported.
 Logs go to the journal (systemd) or `docker logs`. Investigation errors are
 stored on the investigation row and shown in the UI; provider payloads are
 never written to the log.
+
+## 10. Linux VPS deployment
+
+This is the concrete layout of the Linux instance that runs alongside the
+Windows host. Both serve the same application version; the Windows box keeps
+its own database so the two can be compared side by side.
+
+| Item | Path |
+| --- | --- |
+| Code and virtualenv | `/opt/phishtrace`, `/opt/phishtrace/.venv` |
+| Service account | `phishtrace` (no shell, no home data) |
+| Database and captures | `/var/lib/phishtrace/phishtrace.db`, `/var/lib/phishtrace/evidence/` (mode `0700`) |
+| Secrets | `/etc/phishtrace/phishtrace.env` (`0640 root:phishtrace`) |
+| systemd unit | `/etc/systemd/system/phishtrace.service` |
+| Bind address | `127.0.0.1:8098` (nginx terminates TLS) |
+| nginx vhost | `/etc/nginx/sites-available/phishtrace.conf`, listening on `8443` |
+| TLS material | `/etc/nginx/tls/` (self-signed, `CN=167.233.192.198`) |
+| theHarvester | `/opt/phishtrace/.tools/theharvester-venv/bin/theHarvester`, referenced from `config.yaml` |
+
+The host already runs `exrmm-portal.service` and the
+`mysystemservices.exrmm.com` site, whose catch-all `default_server` answers
+unmatched traffic with `444` and rejects unknown TLS handshakes. The
+PhishTrace vhost therefore uses its own port (`8443`) instead of a new
+`server_name`, which keeps the existing site and its Let's Encrypt
+certificate untouched. A trusted certificate needs a DNS record for a
+dedicated name first; once that exists, point certbot at the vhost and drop
+`ssl_reject_handshake` from the catch-all for that name only.
+
+The venv install is editable (`pip install -e /opt/phishtrace`), so a code
+change is deployed by copying the file and restarting the unit:
+
+```bash
+scp phishtrace/api/routes.py root@host:/opt/phishtrace/phishtrace/api/routes.py
+ssh root@host 'systemctl restart phishtrace && curl -sS http://127.0.0.1:8098/health'
+```
+
+### Migrating data from another instance
+
+1. Snapshot the source database with the sqlite3 backup API (never copy a
+   live WAL database with plain `cp`).
+2. Archive the `evidence/` tree and copy both to the target host.
+3. Rewrite every `evidence.raw_response_path` row to the target's evidence
+   root, then confirm the row count and that no path is missing.
+4. `chown -R phishtrace:phishtrace /var/lib/phishtrace`, `chmod 700`, restart.
+
+The last migration moved 23 investigations and 2,180 capture rows with zero
+missing files. Orphaned rows are the failure mode to watch for: the purge
+command deletes files it knows about but leaves rows whose file vanished,
+so always check the `missing` count before trusting the copy.
+
+### Evidence preview budget
+
+Captures are previewed from local disk, so the budget is about browser work,
+not bandwidth. HTML keeps a larger budget (2 MB) than opaque bodies (100 KB)
+because a real page spends its first hundred kilobytes on inline CSS;
+truncating there leaves the sandboxed frame empty, which looks like the
+renderer failed. Above the budget the API sets `preview_truncated` and the
+console shows a "preview limited to" chip instead of quietly showing a
+partial page.

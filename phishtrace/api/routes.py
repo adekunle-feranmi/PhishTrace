@@ -25,7 +25,7 @@ from phishtrace.api.auth import require_csrf
 from phishtrace.api.deps import current_user
 from phishtrace.api.runs import TERMINAL_STATUSES, RunError
 from phishtrace.core.timeline import TimelineMerger
-from phishtrace.evidence_preview import PREVIEW_LIMIT, classify_evidence
+from phishtrace.evidence_preview import classify_evidence, preview_limit_for
 from phishtrace.models import iso
 from phishtrace.normalizer import normalize_indicator, refang
 from phishtrace.reports import (
@@ -421,24 +421,28 @@ def evidence_detail(request: Request, investigation_id: str, evidence_id: str,
     if not row:
         raise HTTPException(status_code=404, detail="evidence not found")
     repo = request.app.state.repo
+    # HTML pages need a bigger budget than opaque bodies: their first
+    # hundred kilobytes are usually stylesheet, and cutting there leaves
+    # the viewer frame empty.
+    limit = preview_limit_for(row.get("content_type"))
     preview = ""
     if repo.evidence_store:
         try:
             preview = repo.evidence_store.read_text(
-                str(_confined_evidence_path(request, row["raw_response_path"])), limit=PREVIEW_LIMIT
+                str(_confined_evidence_path(request, row["raw_response_path"])), limit=limit
             )
         except OSError:
             preview = "[evidence file missing]"
     # The console renders HTML in a sandboxed frame, JSON as a tree and images
     # natively; it needs the classification to pick the right viewer.
     kind = classify_evidence(row.get("content_type"), preview[:4096])
-    truncated = bool(row.get("size_bytes") and row["size_bytes"] > PREVIEW_LIMIT)
+    truncated = bool(row.get("size_bytes") and row["size_bytes"] > limit)
     return {
         **row,
         "preview": preview,
         "kind": kind,
         "preview_truncated": truncated,
-        "preview_limit": PREVIEW_LIMIT,
+        "preview_limit": limit,
     }
 
 
