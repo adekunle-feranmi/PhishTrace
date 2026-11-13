@@ -64,7 +64,7 @@ Provider matrix after loading the keys: **41 total, 30 enabled, 11 skipped,
 | 2 | AlienVault OTX | `OTX_API_KEY` | `alienvault_otx` — pulses, passive DNS, URL reputation | Yes | https://otx.alienvault.com/settings |
 | 3 | abuse.ch | `ABUSECH_AUTH_KEY` | `urlhaus` + `threatfox` (one key covers both) | Yes | https://auth.abuse.ch/ |
 | 4 | AbuseIPDB | `ABUSEIPDB_API_KEY` | `abuseipdb` — IP abuse reports, hosting/proxy flags | 1,000 checks/day | https://www.abuseipdb.com/account/api |
-| 5 | GreyNoise | `GREYNOISE_API_KEY` | `greynoise` — scanner noise vs targeted activity | Community API, low daily quota | https://viz.greynoise.io/account/api-key |
+| 5 | GreyNoise | `GREYNOISE_API_KEY` | `greynoise` + `greynoise_ri` — scanner noise vs targeted activity, RIOT benign services | Community API, low daily quota | https://viz.greynoise.io/account/api-key |
 | 6 | Hybrid Analysis | `HYBRID_ANALYSIS_API_KEY` | `hybrid_analysis` — sandbox reports, dropped IOCs | Yes (restricted tier) | https://www.hybrid-analysis.com/apikeys/info |
 
 ## Tier 2 — free account, small quota
@@ -74,6 +74,11 @@ Provider matrix after loading the keys: **41 total, 30 enabled, 11 skipped,
 | 7 | Shodan | `SHODAN_API_KEY` | `shodan` — open ports/banners, host history, favicon/HTML hashes | Free key is very limited (`plan=oss`, 0 credits); $49 one-time Membership = 100 credits/mo | https://account.shodan.io |
 | 8 | Censys | `CENSYS_API_TOKEN` | `censys` — host service/cert lookups | 100 credits/mo, lookup endpoints only (search needs a paid org) | https://platform.censys.io (API tab) |
 | 9 | Mastodon | `MASTODON_TOKEN` | `mastodon` — toot search across instances | Free | https://mastodon.social/settings/applications |
+| 12 | YouTube | `YOUTUBE_API_KEY` | `youtube` — videos/channels mentioning the indicator | 10,000 units/day; a search costs 100 | https://console.cloud.google.com (enable YouTube Data API v3) |
+| 13 | X (Twitter) | `X_BEARER_TOKEN` | `x_search` — recent tweets mentioning the indicator | Recent search requires a paid X API tier | https://developer.x.com/en/portal/dashboard |
+| 14 | SerpApi | `SERPAPI_KEY` | `serpapi` — Google organic results | 100 searches/month free | https://serpapi.com/manage-api-key |
+| 15 | Brave Search | `BRAVE_API_KEY` | `brave_search` — web results | 2,000 queries/month free | https://api-dashboard.search.brave.com/app/documentation |
+| 16 | Google Programmable Search | `GOOGLE_CSE_API_KEY` + `GOOGLE_CSE_CX` | `google_cse` — search results for your engine | 100 queries/day free | https://programmablesearchengine.google.com/controlpanel/all |
 
 ## Tier 3 — paid / commercial
 
@@ -81,6 +86,13 @@ Provider matrix after loading the keys: **41 total, 30 enabled, 11 skipped,
 |---|----------|------------|--------------------|-------|
 | 10 | SecurityTrails | `SECURITYTRAILS_API_KEY` | `securitytrails` — historical DNS, subdomains, WHOIS | Commercial; no dependable free API tier |
 | 11 | WhoisXML | `WHOISXML_API_KEY` | `whoisxml` — historical WHOIS, reverse WHOIS | Free trial credits, then paid |
+| 17 | DomainTools | `DOMAINTOOLS_API_KEY` + `DOMAINTOOLS_USERNAME` | `domaintools` — parsed WHOIS, registrar, nameservers | Commercial | https://www.domaintools.com/ |
+| 18 | ValidIn | `VALIDIN_API_KEY` | `validin` — historical DNS for domains and IPs | Community tier | https://www.validin.com/ |
+| 19 | SilentPush | `SILENTPUSH_API_KEY` | `silentpush` — enrichment, risk score, ASN, WHOIS | Commercial | https://www.silentpush.com/ |
+| 20 | Netlas | `NETLAS_API_KEY` | `netlas` — internet asset and DNS search | Free account, daily quota | https://app.netlas.io/ |
+| 21 | CriminalIP | `CRIMINALIP_API_KEY` | `criminalip` — IP/domain risk reports | Free tier, limited queries | https://www.criminalip.io/ |
+| 22 | DeHashed | `DEHASHED_API_KEY` + `DEHASHED_EMAIL` | `dehashed` — breach exposure search (legal gate) | Subscription required | https://www.dehashed.com/ |
+| 23 | Intelligence X | `INTELX_API_KEY` | `intelx` — leaked/archived document search (legal gate) | Free instance `free.intelx.io`; integrations need the API license | https://intelx.io/ |
 
 ## Not obtainable
 
@@ -92,13 +104,13 @@ Provider matrix after loading the keys: **41 total, 30 enabled, 11 skipped,
 ## Declared but not implemented
 
 `config.key_presence()` lists more names than the code actually consumes. These
-have no provider behind them yet, so adding a key changes nothing:
-`VALIDIN_API_KEY`, `SILENTPUSH_API_KEY`, `DOMAINTOOLS_API_KEY`, `INTELX_API_KEY`,
-`DEHASHED_API_KEY`, `MDTI_TOKEN`, `X_BEARER_TOKEN`, `YOUTUBE_API_KEY`,
-`SERPAPI_KEY`, `BRAVE_API_KEY`, `GOOGLE_CSE_API_KEY`, `TELEGRAM_API_ID`/`HASH`,
-`HUDSONROCK_API_KEY` (the free Cavalier OSINT endpoint needs no key and is
-already used), `NETLAS_API_KEY`, `CRIMINALIP_API_KEY`, `SPIDERFOOT_API_KEY`,
-`REDDIT_CLIENT_ID`, `BLUESKY_APP_PASSWORD`.
+still have no consumer, so adding a key changes nothing:
+`MDTI_TOKEN`, `SPIDERFOOT_API_KEY`, `TELEGRAM_API_ID`/`TELEGRAM_API_HASH`/
+`TELEGRAM_SESSION`/`TELEGRAM_BOT_TOKEN` (Telegram collection stays on the
+public web preview), `BLUESKY_APP_PASSWORD` (the public AppView is keyless).
+`HUDSONROCK_API_KEY` — the free Cavalier OSINT endpoint needs no key and is
+already used. `REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET` are consumed by the
+`reddit` provider when present (OAuth instead of public JSON).
 
 ## Quota notes
 

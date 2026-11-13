@@ -145,10 +145,28 @@ providers:
   holehe:        { enabled: false, options: { path: "C:/Users/Administrator/PhishTrace/.tools/osint/Scripts/holehe.exe", legal_acknowledged: false } }
   ghunt:         { enabled: false, options: { path: "C:/Users/Administrator/PhishTrace/.tools/osint/Scripts/ghunt.exe", cookies: "", legal_acknowledged: false } }
 
-  # ---- Planned, not implemented -------------------------------------------
-  # These names are accepted in config.yaml (no error) but no plugin exists yet;
-  # docs/PROVIDERS.md tracks them.  Keep keys in .env for the day they land.
-  # search: youtube, x_search, serpapi, brave_search, google_cse, shodan_search
-  # feeds: domaintools, validin, silentpush, netlas, criminalip, greynoise_ri
-  # breach: dehashed, intelx  (legal review required before enabling)
-  # integrations: misp, opencti, telegram
+  # ---- Search APIs (sightings) --------------------------------------------
+  # Each stays inert until its key is present in .env; see docs/API_KEYS.md.
+  youtube:      { enabled: true, timeout: 30 }
+  x_search:     { enabled: true, timeout: 30 }
+  serpapi:      { enabled: true, timeout: 30 }
+  brave_search: { enabled: true, timeout: 30 }
+  google_cse:   { enabled: true, timeout: 30 }
+
+  # ---- Commercial feeds ----------------------------------------------------
+  domaintools:  { enabled: true, timeout: 30 }
+  validin:      { enabled: true, timeout: 45 }
+  silentpush:   { enabled: true, timeout: 30 }
+  netlas:       { enabled: true, timeout: 45 }
+  criminalip:   { enabled: true, timeout: 45 }
+  greynoise_ri: { enabled: true, timeout: 30 }   # reuses GREYNOISE_API_KEY
+
+  # ---- Breach data ---------------------------------------------------------
+  # Gated twice: `enabled` and `legal_acknowledged`.  Only turn these on after
+  # your own legal review of the vendor terms and applicable data laws.
+  dehashed:     { enabled: false, timeout: 45, options: { legal_acknowledged: false } }
+  intelx:       { enabled: false, timeout: 60, options: { legal_acknowledged: false, api_base: "https://free.intelx.io" } }
+
+  # Still not providers: MISP and OpenCTI are report export targets
+  # (phishtrace/reports/); Telegram collection stays with the public-channel
+  # provider above.  docs/PROVIDERS.md tracks the reasoning.

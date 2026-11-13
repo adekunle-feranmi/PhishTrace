@@ -13,6 +13,11 @@ phishtrace/providers/
 │   infrastructure.py, social.py, urlscan.py
 │                    Phase A — public, unauthenticated sources
 ├── keyed.py         Phase B — API-key sources
+├── commercial.py    Phase B — commercial feed sources (DomainTools, ValidIn,
+│                    SilentPush, Netlas, CriminalIP, GreyNoise RIOT)
+├── search.py        Phase B — search-API sightings (YouTube, X, SerpApi,
+│                    Brave, Google CSE)
+├── breach.py        Phase B — breach data (DeHashed, IntelX; legal gate)
 └── tool_wrappers.py Phase C — installed CLI tools
 
 MISP and OpenCTI are report export targets, not pivot providers; their code
@@ -64,7 +69,7 @@ All Phase A providers are safe to leave enabled. They respect the global
 request budget (`limits.global_request_budget`) and per-provider budget, and
 each records its HTTP exchange as evidence.
 
-## Phase B — keyed APIs (10 providers)
+## Phase B — keyed APIs (23 providers)
 
 Keys are read from the environment only (`Config.api_key`), never from YAML.
 Every key below is documented in `.env.example`.
@@ -81,6 +86,19 @@ Every key below is documented in `.env.example`.
 | `greynoise` | `GREYNOISE_API_KEY` | ip | RIOT/benign services are marked `context_only` so shared CDN IPs never become hosting abuse targets |
 | `hybrid_analysis` | `HYBRID_ANALYSIS_API_KEY` | file_hash | `api-key` header; picks the highest-threat report of the returned samples |
 | `malwarebazaar` | `MALWAREBAZAAR_API_KEY` (optional) | file_hash, domain | Works anonymously; the key only raises rate limits. Domains found in tags are context-only |
+| `greynoise_ri` | `GREYNOISE_API_KEY` (shared) | ip | RIOT v2 lookup; a hit marks the IP `known-benign-service` (context-only stoplist) |
+| `domaintools` | `DOMAINTOOLS_API_KEY`, `DOMAINTOOLS_USERNAME` | nameserver, email | Parsed WHOIS; `api_key`/`api_username` travel in the query string and are redacted in evidence |
+| `validin` | `VALIDIN_API_KEY` | ip, nameserver, domain | Historical DNS for domains (wildcard) and IPs; wayward nameserver hits are context-only |
+| `silentpush` | `SILENTPUSH_API_KEY` | ip, asn, email | Enrichment endpoint; risk score lands in a `reputation-check` event, WHOIS email is context-only |
+| `netlas` | `NETLAS_API_KEY` | ip, nameserver, domain | Domains query DNS records; IPs query host responses; subdomains/context stay context-only |
+| `criminalip` | `CRIMINALIP_API_KEY` | ip, domain, url, port | IP report (score/ports/connected domains) and domain report (score/JARM); connected domains are context-only |
+| `youtube` | `YOUTUBE_API_KEY` | url, username | Sightings provider; channel hits also emit a context-only username |
+| `x_search` | `X_BEARER_TOKEN` | url, username | Sightings provider over recent tweets; tier without recent search degrades to a partial |
+| `serpapi` | `SERPAPI_KEY` | url | Sightings provider; `api_key` is in the query string and redacted in evidence |
+| `brave_search` | `BRAVE_API_KEY` | url | Sightings provider; `X-Subscription-Token` header |
+| `google_cse` | `GOOGLE_CSE_API_KEY`, `GOOGLE_CSE_CX` | url | Sightings provider; both variables required |
+| `dehashed` | `DEHASHED_API_KEY`, `DEHASHED_EMAIL` | email, username | HTTP Basic auth; every output is context-only; requires `legal_acknowledged: true` |
+| `intelx` | `INTELX_API_KEY` | — | Search → poll → result flow; hits become events with intelx.io links; requires `legal_acknowledged: true` |
 
 Behaviour shared by every Phase B provider:
 
@@ -140,18 +158,25 @@ cookie file in `options.cookies`.
 | `options.max_output` | provider block | Byte cap for stdout and stderr (default 4 MB, spiderfoot 8 MB) |
 | `limits.provider_timeout_seconds` | global | Default HTTP timeout for requests that do not pass their own |
 
-## Not implemented (tracked, not wired)
+## Search, feeds and breach data (implemented 2026-11)
 
-These names appear in `.env.example` and are mentioned as future work; no plugin
-exists, so configuring them has no effect:
+The formerly "planned" names are now real plugins:
 
-* Search APIs: `youtube`, `x_search`, `serpapi`, `brave_search`, `google_cse`.
-* Commercial feeds: `domaintools`, `validin`, `silentpush`, `netlas`,
-  `criminalip`, `greynoise_ri`.
-* Breach data: `dehashed`, `intelx` — require legal review before any code lands.
-* `misp` / `opencti` / `telegram` as *providers*: MISP and OpenCTI are report
-  export targets (`phishtrace/reports/`), and Telegram collection is limited to
-  the public-channel provider above.
+* **Search APIs** — `phishtrace/providers/search.py`: `youtube`, `x_search`,
+  `serpapi`, `brave_search`, `google_cse`. These are sightings providers: a
+  result is recorded only when the indicator appears verbatim in the title,
+  snippet or URL, and each hit also yields a context-only URL observation.
+* **Commercial feeds** — `phishtrace/providers/commercial.py`: `domaintools`,
+  `validin`, `silentpush`, `netlas`, `criminalip`, and `greynoise_ri`
+  (GreyNoise RIOT v2, which reuses the existing `GREYNOISE_API_KEY`).
+* **Breach data** — `phishtrace/providers/breach.py`: `dehashed` and `intelx`.
+  Both ship disabled and double-gated (`enabled: false` plus
+  `legal_acknowledged: false` in config.yaml); every output they produce is
+  context-only, so breach records never drive expansion.
+
+Still not providers: `misp` / `opencti` are report export targets
+(`phishtrace/reports/`), and Telegram collection stays with the public-channel
+provider (`telegram_public`).
 
 ## Adding a provider
 

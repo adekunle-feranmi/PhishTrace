@@ -553,7 +553,11 @@ def test_registry_exposes_phase_b_and_c_providers():
     by_name = {cls.meta.name: cls for cls in classes}
 
     phase_b = {"abuseipdb", "alienvault_otx", "censys", "greynoise", "hybrid_analysis",
-               "malwarebazaar", "securitytrails", "shodan", "virustotal", "whoisxml"}
+               "malwarebazaar", "securitytrails", "shodan", "virustotal", "whoisxml",
+               # formerly planned providers (docs/PROVIDERS.md), implemented now:
+               "youtube", "x_search", "serpapi", "brave_search", "google_cse",
+               "domaintools", "validin", "silentpush", "netlas", "criminalip",
+               "greynoise_ri", "dehashed", "intelx"}
     phase_c = {"dnstwist", "ghunt", "holehe", "maigret", "phoneinfoga", "sherlock",
                "spiderfoot", "theharvester"}
     assert {name for name, cls in by_name.items() if cls.meta.phase == "B"} == phase_b
